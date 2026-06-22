@@ -4,6 +4,7 @@ import math
 import re
 import unicodedata
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -23,6 +24,12 @@ from models.shipment import (
     ShipmentOptions,
     ShipmentPreviewRow,
     ShipmentRecord,
+)
+from models.shipment_config import (
+    CATEGORY_CONSUMABLE,
+    LEGACY_CATEGORY_MAP,
+    ShipmentCategoryState,
+    product_key,
 )
 
 
@@ -323,10 +330,14 @@ class ShipmentService:
         ]
 
     def preview(
-        self, analysis: ShipmentAnalysis, options: ShipmentOptions | None = None
+        self,
+        analysis: ShipmentAnalysis,
+        options: ShipmentOptions | None = None,
+        category_config: ShipmentCategoryState | None = None,
     ) -> list[ShipmentPreviewRow]:
         options = options or ShipmentOptions()
-        filtered = self.filter_records(analysis.records, options)
+        records = self._apply_category_config(analysis.records, category_config)
+        filtered = self.filter_records(records, options)
         grouped: dict[tuple[str, int, str, str, str, str, str], list[ShipmentRecord]] = defaultdict(list)
         block_months: dict[tuple[str, int, str], list[int]] = defaultdict(list)
         for record in filtered:
@@ -346,16 +357,26 @@ class ShipmentService:
             divisor = last_month - first_month + 1 if considered else 0
             total = sum(row.cantidad for row in rows if first_month <= row.mes <= last_month)
             result.append(ShipmentPreviewRow(*key, total, divisor, total / divisor if divisor else 0))
-        return sorted(result, key=lambda row: (row.cliente, row.anio, row.linea, self._product_sort(row.cod_prod, row.producto)))
+        return sorted(
+            result,
+            key=lambda row: (
+                row.cliente,
+                row.anio,
+                row.linea,
+                self._product_sort(row.cod_prod, row.producto, row.cod_eqv, category_config),
+            ),
+        )
 
     def generate_report(
         self,
         analysis: ShipmentAnalysis,
         destination: str | Path,
         options: ShipmentOptions | None = None,
+        category_config: ShipmentCategoryState | None = None,
     ) -> Path:
         options = options or ShipmentOptions()
-        records = self.filter_records(analysis.records, options)
+        configured_records = self._apply_category_config(analysis.records, category_config)
+        records = self.filter_records(configured_records, options)
         if not records:
             raise ShipmentValidationError("Los filtros no dejan registros para generar el reporte")
         output = Path(destination)
@@ -366,11 +387,12 @@ class ShipmentService:
         workbook = Workbook()
         workbook.remove(workbook.active)
         if options.create_summary:
-            self._write_summary(workbook.create_sheet("Resumen"), records, options)
+            self._write_summary(workbook.create_sheet("Resumen"), records, options, category_config)
         self._write_report_sheet(
             workbook.create_sheet("Total General"),
             records,
             options,
+            category_config,
             title="TOTAL GENERAL DE CLIENTES",
             client=None,
         )
@@ -383,7 +405,12 @@ class ShipmentService:
                 used.add(sheet_name)
                 client_records = [record for record in records if record.cliente == client]
                 self._write_report_sheet(
-                    workbook.create_sheet(sheet_name), client_records, options, title=client, client=client
+                    workbook.create_sheet(sheet_name),
+                    client_records,
+                    options,
+                    category_config,
+                    title=client,
+                    client=client,
                 )
         normalized = workbook.create_sheet("Data_Normalizada")
         self._write_normalized(normalized, records, options)
@@ -521,7 +548,13 @@ class ShipmentService:
     def _key_join(*values: object) -> str:
         return "|".join(str(value).replace("|", "/") for value in values)
 
-    def _write_summary(self, worksheet, records: Sequence[ShipmentRecord], options: ShipmentOptions) -> None:
+    def _write_summary(
+        self,
+        worksheet,
+        records: Sequence[ShipmentRecord],
+        options: ShipmentOptions,
+        category_config: ShipmentCategoryState | None = None,
+    ) -> None:
         worksheet.merge_cells("A1:H1")
         worksheet["A1"] = "RESUMEN GENERAL POR PRODUCTO"
         self._style_title(worksheet, 1, 8)
@@ -531,7 +564,7 @@ class ShipmentService:
         self._style_header(worksheet, 3, 8)
 
         row = 4
-        products = self._distinct_products(records)
+        products = self._distinct_products(records, category_config)
         cutoff_month = self.today.month if options.exclude_current_month else self.today.month + 1
         cutoff_year = self.today.year
         if cutoff_month == 13:
@@ -549,7 +582,7 @@ class ShipmentService:
             worksheet.cell(row, 8, f'=IF(G{row}=0,0,F{row}/G{row})')
             worksheet.cell(row, 4).number_format = "mmm-yyyy"
             worksheet.cell(row, 5).number_format = "mmm-yyyy"
-            self._style_summary_row(worksheet, row, category, 8)
+            self._style_summary_row(worksheet, row, category, 8, category_config)
             row += 1
 
         row += 2
@@ -567,7 +600,7 @@ class ShipmentService:
             self._style_header(worksheet, row, 8)
             row += 1
             client_records = [record for record in records if record.cliente == client]
-            for code, equivalent, product, category in self._distinct_products(client_records):
+            for code, equivalent, product, category in self._distinct_products(client_records, category_config):
                 key = self._key_join(client, code)
                 worksheet.cell(row, 1, code).number_format = "@"
                 worksheet.cell(row, 2, equivalent).number_format = "@"
@@ -579,7 +612,7 @@ class ShipmentService:
                 worksheet.cell(row, 8, f'=IF(G{row}=0,0,F{row}/G{row})')
                 worksheet.cell(row, 4).number_format = "mmm-yyyy"
                 worksheet.cell(row, 5).number_format = "mmm-yyyy"
-                self._style_summary_row(worksheet, row, category, 8)
+                self._style_summary_row(worksheet, row, category, 8, category_config)
                 row += 1
             row += 1
 
@@ -592,6 +625,7 @@ class ShipmentService:
         worksheet,
         records: Sequence[ShipmentRecord],
         options: ShipmentOptions,
+        category_config: ShipmentCategoryState | None,
         title: str,
         client: str | None,
     ) -> None:
@@ -600,7 +634,7 @@ class ShipmentService:
             line_records = [record for record in records if record.linea == line]
             for year in sorted({record.anio for record in line_records}):
                 block = [record for record in line_records if record.anio == year]
-                products = self._distinct_products(block)
+                products = self._distinct_products(block, category_config)
                 worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=18)
                 worksheet.cell(row, 1, title.upper())
                 self._style_title(worksheet, row, 18)
@@ -647,9 +681,10 @@ class ShipmentService:
                     )
                     worksheet.cell(row, 18, f'=IF(Q{row}=0,0,P{row}/Q{row})')
                     worksheet.cell(row, 18).number_format = "0.0"
-                    if options.use_category_colors and category in CATEGORY_FILLS:
+                    fill = self._category_fill(category, category_config)
+                    if options.use_category_colors and fill is not None:
                         for column in (3, 16, 17, 18):
-                            worksheet.cell(row, column).fill = CATEGORY_FILLS[category]
+                            worksheet.cell(row, column).fill = fill
                     for column in range(1, 19):
                         cell = worksheet.cell(row, column)
                         cell.border = THIN_BORDER
@@ -707,8 +742,14 @@ class ShipmentService:
         )
         return f"=IFERROR(IF({end}=0,0,{end}-{start}+1),0)"
 
-    @staticmethod
-    def _style_summary_row(worksheet, row: int, category: str, last_column: int) -> None:
+    def _style_summary_row(
+        self,
+        worksheet,
+        row: int,
+        category: str,
+        last_column: int,
+        category_config: ShipmentCategoryState | None = None,
+    ) -> None:
         for column in range(1, last_column + 1):
             cell = worksheet.cell(row, column)
             cell.border = THIN_BORDER
@@ -719,9 +760,10 @@ class ShipmentService:
             )
         worksheet.row_dimensions[row].height = 20
         colored_columns = (3, 6, 7, 8) if last_column == 8 else (4, 7, 8, 9)
+        fill = self._category_fill(category, category_config)
         for column in colored_columns:
-            if category in CATEGORY_FILLS:
-                worksheet.cell(row, column).fill = CATEGORY_FILLS[category]
+            if fill is not None:
+                worksheet.cell(row, column).fill = fill
         worksheet.cell(row, last_column).number_format = "0.0"
 
     @staticmethod
@@ -779,26 +821,113 @@ class ShipmentService:
         workbook.save(path)
         workbook.close()
 
-    def _distinct_products(self, records: Sequence[ShipmentRecord]) -> list[tuple[str, str, str, str]]:
+    def _distinct_products(
+        self,
+        records: Sequence[ShipmentRecord],
+        category_config: ShipmentCategoryState | None = None,
+    ) -> list[tuple[str, str, str, str]]:
         products: dict[str, tuple[str, str, str, str]] = {}
         for record in records:
-            products.setdefault(
-                record.cod_prod,
-                (record.cod_prod, record.cod_eqv, record.producto, record.categoria),
-            )
-        return sorted(products.values(), key=lambda item: self._product_sort(item[0], item[2]))
+            key = product_key(record.cod_prod, record.cod_eqv, record.producto)
+            products.setdefault(key, (record.cod_prod, record.cod_eqv, record.producto, record.categoria))
+        return sorted(
+            products.values(),
+            key=lambda item: self._product_sort(item[0], item[2], item[1], category_config),
+        )
 
-    def _product_sort(self, code: str, product: str) -> tuple[int, int, int, str, str]:
-        category = self.classify_product(product)
-        consumable_position = self._consumable_position(product) if category == CATEGORY_CONSUMABLES else 0
+    def _product_sort(
+        self,
+        code: str,
+        product: str,
+        equivalent: str = "",
+        category_config: ShipmentCategoryState | None = None,
+    ) -> tuple[int, int, int, str, str]:
+        category = self._configured_category(code, equivalent, product, self.classify_product(product), category_config)
+        consumable_position = self._consumable_position(product) if category in {CATEGORY_CONSUMABLES, CATEGORY_CONSUMABLE} else 0
         model_position = self._model_order.get(code, 1_000_000)
         return (
-            CATEGORY_ORDER[category],
+            self._category_order(category, category_config),
             consumable_position,
-            model_position,
+            self._configured_product_order(code, equivalent, product, category_config, model_position),
             code.casefold(),
             product.casefold(),
         )
+
+    def _apply_category_config(
+        self,
+        records: Iterable[ShipmentRecord],
+        category_config: ShipmentCategoryState | None,
+    ) -> list[ShipmentRecord]:
+        result = []
+        for record in records:
+            category = self._configured_category(
+                record.cod_prod,
+                record.cod_eqv,
+                record.producto,
+                record.categoria,
+                category_config,
+            )
+            result.append(record if category == record.categoria else replace(record, categoria=category))
+        return result
+
+    @staticmethod
+    def _configured_category(
+        cod_prod: str,
+        cod_eqv: str,
+        producto: str,
+        fallback: str,
+        category_config: ShipmentCategoryState | None,
+    ) -> str:
+        if category_config is not None:
+            assignment = category_config.assignments.get(product_key(cod_prod, cod_eqv, producto))
+            if assignment and assignment.category_name:
+                return assignment.category_name
+        return LEGACY_CATEGORY_MAP.get(fallback, fallback)
+
+    @staticmethod
+    def _category_order(
+        category: str,
+        category_config: ShipmentCategoryState | None,
+    ) -> int:
+        if category_config is not None:
+            configured = category_config.category_by_name(category)
+            if configured is not None:
+                return configured.order
+        legacy_order = CATEGORY_ORDER.get(category)
+        if legacy_order is not None:
+            return legacy_order
+        visual_legacy = {value: CATEGORY_ORDER[key] for key, value in LEGACY_CATEGORY_MAP.items()}
+        return visual_legacy.get(category, 1_000_000)
+
+    @staticmethod
+    def _configured_product_order(
+        cod_prod: str,
+        cod_eqv: str,
+        producto: str,
+        category_config: ShipmentCategoryState | None,
+        fallback: int,
+    ) -> int:
+        if category_config is None:
+            return fallback
+        assignment = category_config.assignments.get(product_key(cod_prod, cod_eqv, producto))
+        return assignment.product_order if assignment is not None else fallback
+
+    @staticmethod
+    def _category_fill(
+        category: str,
+        category_config: ShipmentCategoryState | None,
+    ) -> PatternFill | None:
+        if category_config is not None:
+            configured = category_config.category_by_name(category)
+            if configured is not None:
+                return PatternFill("solid", fgColor=configured.normalized_color())
+        if category in CATEGORY_FILLS:
+            return CATEGORY_FILLS[category]
+        legacy_fill = {
+            LEGACY_CATEGORY_MAP[key]: fill
+            for key, fill in CATEGORY_FILLS.items()
+        }
+        return legacy_fill.get(category)
 
     @classmethod
     def _consumable_position(cls, product: str) -> int:
