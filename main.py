@@ -10,7 +10,7 @@ from app.paths import get_app_paths
 from ui.main_window import MainWindow
 
 
-APP_USER_MODEL_ID = "SistemasAnaliticos.InterAutomy"
+APP_USER_MODEL_ID = "SistemasAnaliticos.AutomaticEnvio"
 
 
 def _configure_windows_taskbar_icon() -> None:
@@ -28,11 +28,11 @@ def main() -> int:
     _configure_windows_taskbar_icon()
     configure_logging()
     app = QApplication(sys.argv)
-    app.setApplicationName("InterAutomy")
+    app.setApplicationName("Automatic Envio")
     app_icon = QIcon(str(get_app_paths().resource("resources/icons/Automy1.png")))
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
-    app.setOrganizationName("Sistemas Analíticos")
+    app.setOrganizationName("Sistemas Analiticos")
 
     window = MainWindow()
     window.show()
