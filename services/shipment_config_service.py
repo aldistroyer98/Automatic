@@ -261,6 +261,22 @@ class ShipmentConfigService:
         for assignment in state.assignments.values():
             category = valid.get(str(assignment.category_name or "").casefold())
             assignment.category_name = category or CATEGORY_WITHOUT_CATEGORY
+        for category in state.category_names():
+            assignments = sorted(
+                (
+                    assignment
+                    for assignment in state.assignments.values()
+                    if assignment.category_name == category
+                ),
+                key=lambda item: (
+                    item.product_order,
+                    item.producto.casefold(),
+                    item.cod_prod.casefold(),
+                    item.cod_eqv.casefold(),
+                ),
+            )
+            for order, assignment in enumerate(assignments):
+                assignment.product_order = order
 
     @staticmethod
     def _next_order_by_category(state: ShipmentCategoryState) -> dict[str, int]:

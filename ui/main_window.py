@@ -22,7 +22,7 @@ from app.paths import get_app_paths
 from services.shipment_service import ShipmentService
 from ui.icons import app_icon
 from ui.scaling import AVAILABLE_SCALES, UiScale
-from ui.tabs import ShipmentTab
+from ui.tabs import EquivalenceTab, ShipmentTab
 from ui.theme import ThemeMode, palette, stylesheet
 
 
@@ -61,6 +61,12 @@ class MainWindow(QMainWindow):
             self.shipment_tab,
             app_icon("SP_DriveFDIcon", self, color=icon_color),
             "Envío",
+        )
+        self.equivalence_tab = EquivalenceTab(self)
+        self.tabs.addTab(
+            self.equivalence_tab,
+            app_icon("SP_FileDialogDetailedView", self, color=icon_color),
+            "Equivalencia",
         )
         self.root_layout.addWidget(self.tabs, 1)
 
@@ -227,6 +233,8 @@ class MainWindow(QMainWindow):
     def _update_tab_icon(self) -> None:
         color = "#ffffff" if self.theme_mode == ThemeMode.DARK else palette(self.theme_mode)["accent"]
         self.tabs.setTabIcon(0, app_icon("SP_DriveFDIcon", self, color=color))
+        if self.tabs.count() > 1:
+            self.tabs.setTabIcon(1, app_icon("SP_FileDialogDetailedView", self, color=color))
 
     def save_profile(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

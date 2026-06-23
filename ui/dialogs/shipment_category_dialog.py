@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
     QComboBox,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -55,10 +56,11 @@ class ShipmentCategoryDialog(QDialog):
         self.resize(1220, 660)
         self._build_ui()
         self.refresh_tables()
+        QTimer.singleShot(0, self._resize_tables)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        top_row = QHBoxLayout()
+        top_row = QGridLayout()
 
         line_controls = QHBoxLayout()
         line_controls.addWidget(QLabel("Línea:"), 2)
@@ -68,8 +70,7 @@ class ShipmentCategoryDialog(QDialog):
             self.line_combo.addItem(line, line)
         self.line_combo.currentIndexChanged.connect(self._line_filter_changed)
         line_controls.addWidget(self.line_combo, 6)
-        top_row.addLayout(line_controls, 8)
-        top_row.addSpacing(56)
+        top_row.addLayout(line_controls, 0, 0)
 
         product_controls = QHBoxLayout()
         product_controls.addWidget(QLabel("Buscar:"), 2)
@@ -83,10 +84,13 @@ class ShipmentCategoryDialog(QDialog):
         move_button = QPushButton("Mover", self)
         move_button.clicked.connect(self.move_selected_products_to_category)
         product_controls.addWidget(move_button, 2)
-        top_row.addLayout(product_controls, 20)
+        top_row.addLayout(product_controls, 0, 2)
+        top_row.setColumnStretch(0, 8)
+        top_row.setColumnMinimumWidth(1, 48)
+        top_row.setColumnStretch(2, 20)
         root.addLayout(top_row)
 
-        content = QHBoxLayout()
+        content = QGridLayout()
 
         left = QVBoxLayout()
         left.addWidget(QLabel("Categorías"))
@@ -114,7 +118,7 @@ class ShipmentCategoryDialog(QDialog):
         category_actions.addWidget(delete_button, 1)
         category_actions.addWidget(color_button, 1)
         left.addLayout(category_actions)
-        content.addLayout(left, 8)
+        content.addLayout(left, 0, 0)
 
         move_box = QVBoxLayout()
         move_box.addStretch(1)
@@ -129,7 +133,7 @@ class ShipmentCategoryDialog(QDialog):
             button.clicked.connect(lambda _checked=False, value=action: self.move_selected_to(value))
             move_box.addWidget(button)
         move_box.addStretch(1)
-        content.addLayout(move_box)
+        content.addLayout(move_box, 0, 1)
 
         right = QVBoxLayout()
         right.addWidget(QLabel("Productos de la categoría seleccionada"))
@@ -140,6 +144,7 @@ class ShipmentCategoryDialog(QDialog):
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.product_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.product_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.product_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.product_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.product_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
         self.product_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
@@ -161,7 +166,10 @@ class ShipmentCategoryDialog(QDialog):
         product_actions.addWidget(save_button)
         product_actions.addWidget(exit_button)
         right.addLayout(product_actions)
-        content.addLayout(right, 20)
+        content.addLayout(right, 0, 2)
+        content.setColumnStretch(0, 8)
+        content.setColumnMinimumWidth(1, 48)
+        content.setColumnStretch(2, 20)
 
         root.addLayout(content, 1)
         self._resize_tables()
@@ -214,6 +222,7 @@ class ShipmentCategoryDialog(QDialog):
                 equivalent_item.setFlags(equivalent_item.flags() & ~Qt.ItemIsEditable)
                 product_item = QTableWidgetItem(assignment.producto)
                 product_item.setToolTip(assignment.producto)
+                product_item.setTextAlignment(Qt.AlignCenter)
                 product_item.setFlags(product_item.flags() & ~Qt.ItemIsEditable)
                 self.product_table.setItem(row, 0, order_item)
                 self.product_table.setItem(row, 1, code_item)
@@ -530,15 +539,19 @@ class ShipmentCategoryDialog(QDialog):
         super().resizeEvent(event)
         self._resize_tables()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._resize_tables)
+
     def _resize_tables(self) -> None:
         if not hasattr(self, "category_table") or not hasattr(self, "product_table"):
             return
-        self._resize_columns(self.category_table, (1, 4, 2), padding=8)
-        self._resize_columns(self.product_table, (1, 5, 5, 8), padding=12)
+        self._resize_columns(self.category_table, (2, 4, 3))
+        self._resize_columns(self.product_table, (2, 4, 4, 8))
 
     @staticmethod
-    def _resize_columns(table: QTableWidget, ratios: tuple[int, ...], padding: int) -> None:
-        available = max(1, table.viewport().width() - padding)
+    def _resize_columns(table: QTableWidget, ratios: tuple[int, ...]) -> None:
+        available = max(1, table.viewport().width())
         total = sum(ratios)
         used = 0
         for column, ratio in enumerate(ratios):

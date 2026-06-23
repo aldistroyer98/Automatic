@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Signal, Qt
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QApplication,
@@ -32,6 +33,94 @@ from services.shipment_config_service import ShipmentConfigService
 from services.shipment_service import ShipmentService
 from services.shipment_powerbi_service import ShipmentPowerBIService
 from ui.dialogs import ShipmentCategoryDialog
+
+
+class CheckableComboBox(QComboBox):
+    selectionChanged = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.setModel(QStandardItemModel(self))
+        self.view().viewport().installEventFilter(self)
+        self.set_values(())
+
+    def set_values(self, values) -> None:
+        self.model().clear()
+        self._append_item("Todos", None, checked=True)
+        for value in values:
+            self._append_item(str(value), value)
+        self._update_summary()
+
+    def selected_data(self) -> set[object]:
+        model = self.model()
+        return {
+            model.item(row).data(Qt.UserRole)
+            for row in range(1, model.rowCount())
+            if model.item(row).checkState() == Qt.Checked
+        }
+
+    def set_selected_data(self, values) -> None:
+        selected = set(values or ())
+        model = self.model()
+        model.item(0).setCheckState(Qt.Checked if not selected else Qt.Unchecked)
+        for row in range(1, model.rowCount()):
+            item = model.item(row)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in selected else Qt.Unchecked)
+        self._normalize_selection()
+        self._update_summary()
+
+    def clear_values(self) -> None:
+        self.set_values(())
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.view().viewport() and event.type() == QEvent.MouseButtonRelease:
+            index = self.view().indexAt(event.position().toPoint())
+            if index.isValid():
+                self._toggle_row(index.row())
+                return True
+        return super().eventFilter(watched, event)
+
+    def _append_item(self, text: str, data: object, *, checked: bool = False) -> None:
+        item = QStandardItem(text)
+        item.setData(data, Qt.UserRole)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.model().appendRow(item)
+
+    def _toggle_row(self, row: int) -> None:
+        model = self.model()
+        if row == 0:
+            for index in range(model.rowCount()):
+                model.item(index).setCheckState(Qt.Checked if index == 0 else Qt.Unchecked)
+        else:
+            item = model.item(row)
+            item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+            model.item(0).setCheckState(Qt.Unchecked)
+            self._normalize_selection()
+        self._update_summary()
+        self.selectionChanged.emit()
+
+    def _normalize_selection(self) -> None:
+        model = self.model()
+        specifics = [model.item(row) for row in range(1, model.rowCount())]
+        checked = [item for item in specifics if item.checkState() == Qt.Checked]
+        if not checked or (specifics and len(checked) == len(specifics)):
+            model.item(0).setCheckState(Qt.Checked)
+            for item in specifics:
+                item.setCheckState(Qt.Unchecked)
+
+    def _update_summary(self) -> None:
+        selected = self.selected_data()
+        if not selected:
+            text = "Todos"
+        elif len(selected) <= 2:
+            text = ", ".join(str(value) for value in sorted(selected, key=str))
+        else:
+            text = f"{len(selected)} seleccionados"
+        self.lineEdit().setText(text)
+        self.setToolTip(", ".join(str(value) for value in sorted(selected, key=str)) or "Todos")
 
 
 class ClientFilterDialog(QDialog):
@@ -205,7 +294,7 @@ class ShipmentTab(QWidget):
         layout.addLayout(file_row)
 
         filters = QGridLayout()
-        self.filter_boxes: dict[str, QComboBox] = {}
+        self.filter_boxes: dict[str, QComboBox | CheckableComboBox] = {}
         self.client_combo = QComboBox(self)
         self.client_combo.addItem("Todos", None)
         self.client_combo.currentIndexChanged.connect(self._handle_client_combo_changed)
@@ -225,9 +314,13 @@ class ShipmentTab(QWidget):
             ("comodatos", "Comodato"),
         )
         for index, (key, label) in enumerate(labels, start=1):
-            box = QComboBox()
-            box.addItem("Todos", None)
-            box.currentIndexChanged.connect(self.refresh_preview)
+            multiple = key in {"years", "lines"}
+            box = CheckableComboBox() if multiple else QComboBox()
+            if multiple:
+                box.selectionChanged.connect(self.refresh_preview)
+            else:
+                box.addItem("Todos", None)
+                box.currentIndexChanged.connect(self.refresh_preview)
             self.filter_boxes[key] = box
             filters.addWidget(QLabel(label), 0, index)
             filters.addWidget(box, 1, index)
@@ -318,12 +411,15 @@ class ShipmentTab(QWidget):
             "comodatos": sorted({record.comodato for record in records if record.comodato}),
         }
         for key, box in self.filter_boxes.items():
-            box.blockSignals(True)
-            box.clear()
-            box.addItem("Todos", None)
-            for value in values[key]:
-                box.addItem(str(value), value)
-            box.blockSignals(False)
+            if isinstance(box, CheckableComboBox):
+                box.set_values(values[key])
+            else:
+                box.blockSignals(True)
+                box.clear()
+                box.addItem("Todos", None)
+                for value in values[key]:
+                    box.addItem(str(value), value)
+                box.blockSignals(False)
         self._advanced_clients_applied = False
         self._advanced_client_selection.clear()
         self._populate_client_combo()
@@ -365,7 +461,14 @@ class ShipmentTab(QWidget):
         dialog = ClientFilterDialog(
             self.analysis.records,
             initial_selection,
-            {key: box.currentData() for key, box in self.filter_boxes.items()},
+            {
+                key: (
+                    next(iter(box.selected_data()))
+                    if isinstance(box, CheckableComboBox) and len(box.selected_data()) == 1
+                    else box.currentData() if not isinstance(box, CheckableComboBox) else None
+                )
+                for key, box in self.filter_boxes.items()
+            },
             self,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -398,8 +501,11 @@ class ShipmentTab(QWidget):
             "average_from_first_shipment": True,
         }
         for key, box in self.filter_boxes.items():
-            value = box.currentData()
-            kwargs[key] = {value} if value is not None else set()
+            if isinstance(box, CheckableComboBox):
+                kwargs[key] = box.selected_data()
+            else:
+                value = box.currentData()
+                kwargs[key] = {value} if value is not None else set()
         selected_client = self.client_combo.currentData()
         if self._advanced_clients_applied and not self._advanced_client_selection:
             kwargs["clients"] = {"__NO_CLIENT_SELECTED__"}
@@ -439,11 +545,9 @@ class ShipmentTab(QWidget):
         if not hasattr(self, "preview_table"):
             return
 
-        ratios = (12, 2, 8, 5, 5, 8, 2, 2, 2)
-        total_units = sum(ratios)  # 46
-
-        viewport_width = self.preview_table.viewport().width()
-        available = max(420, viewport_width - 16)
+        ratios = (6, 1, 3, 2, 2, 4, 1, 1, 1)
+        total_units = sum(ratios)
+        available = max(1, self.preview_table.viewport().width())
 
         used = 0
         for column, ratio in enumerate(ratios):
@@ -472,7 +576,12 @@ class ShipmentTab(QWidget):
     def _has_active_filters(self) -> bool:
         if self.client_combo.currentData() is not None or self._advanced_clients_applied:
             return True
-        return any(box.currentData() is not None for box in self.filter_boxes.values())
+        return any(
+            bool(box.selected_data())
+            if isinstance(box, CheckableComboBox)
+            else box.currentData() is not None
+            for box in self.filter_boxes.values()
+        )
 
     def generate_report(self) -> None:
         if self.analysis is None:
@@ -540,8 +649,11 @@ class ShipmentTab(QWidget):
         self.log.clear()
         self.status_label.setText("Carga una base de envíos para comenzar.")
         for box in self.filter_boxes.values():
-            box.clear()
-            box.addItem("Todos", None)
+            if isinstance(box, CheckableComboBox):
+                box.clear_values()
+            else:
+                box.clear()
+                box.addItem("Todos", None)
         self._advanced_clients_applied = False
         self._advanced_client_selection.clear()
         self.client_combo.clear()
