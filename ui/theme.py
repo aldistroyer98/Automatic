@@ -322,12 +322,17 @@ def _build_stylesheet(mode: ThemeMode, scale: UiScale | None = None) -> str:
         selection-background-color: rgba(37, 99, 235, 0.18);
         selection-color: {c["text"]};
     }}
+    QTableView::item {{
+        padding-left: {s(6)}px;
+        padding-right: {s(6)}px;
+    }}
     QTableView::item:hover {{
         background: rgba(37, 99, 235, 0.10);
     }}
     QTableView::item:selected {{
         background: rgba(37, 99, 235, 0.20);
         color: {c["text"]};
+        
     }}
     QHeaderView::section {{
         background: {c["surface_alt"]};

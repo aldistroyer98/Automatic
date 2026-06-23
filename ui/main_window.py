@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self.logo_label.setObjectName("HeaderLogo")
         self.logo_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.logo_label.setScaledContents(False)
+        self.logo_label.setContentsMargins(8, 4, 8, 4)
         self.header_left_layout.addWidget(self.logo_label)
         self.header_left_layout.addStretch(1)
         self.header_layout.addWidget(self.header_left)
@@ -157,6 +158,7 @@ class MainWindow(QMainWindow):
         self._update_logo()
         self._update_tab_icon()
         self.setStyleSheet(stylesheet(self.theme_mode, self.ui_scale))
+        self._style_logo_label()
         self.resize(self.ui_scale.window_size())
         if center:
             self._center_window()
@@ -165,10 +167,17 @@ class MainWindow(QMainWindow):
         if self._logo_pixmap.isNull():
             self.logo_label.hide()
             return
-        height = self.ui_scale.px(48, minimum=32)
+        height = self.ui_scale.px(54, minimum=36)
         pixmap = self._logo_pixmap.scaledToHeight(height, Qt.SmoothTransformation)
         self.logo_label.setPixmap(pixmap)
         self.logo_label.show()
+
+    def _style_logo_label(self) -> None:
+        s = self.ui_scale.px
+        self.logo_label.setMinimumSize(s(120), s(62))
+        self.logo_label.setStyleSheet(
+            f"QLabel#HeaderLogo {{ background: #ffffff; border-radius: {s(8)}px; padding: {s(4)}px {s(8)}px; }}"
+        )
 
     def _center_window(self) -> None:
         screen = self.screen()

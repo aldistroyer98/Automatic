@@ -38,7 +38,7 @@ class ShipmentConfigService:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             categories = [
                 ShipmentCategoryConfig(
-                    str(item.get("name", "")).strip(),
+                    LEGACY_CATEGORY_MAP.get(str(item.get("name", "")).strip(), str(item.get("name", "")).strip()),
                     str(item.get("color_hex", "E7E6E6")).strip(),
                     int(item.get("order", index)),
                 )
@@ -55,8 +55,12 @@ class ShipmentConfigService:
                     cod_prod=str(item.get("cod_prod", "")).strip(),
                     cod_eqv=str(item.get("cod_eqv", "")).strip(),
                     producto=str(item.get("producto", "")).strip(),
-                    category_name=str(item.get("category_name", "")).strip(),
+                    category_name=LEGACY_CATEGORY_MAP.get(
+                        str(item.get("category_name", "")).strip(),
+                        str(item.get("category_name", "")).strip(),
+                    ),
                     product_order=int(item.get("product_order", index)),
+                    linea=str(item.get("linea", "")).strip(),
                 )
             state = ShipmentCategoryState(categories=categories, assignments=assignments)
             self._ensure_defaults(state)
@@ -86,6 +90,7 @@ class ShipmentConfigService:
                     "producto": assignment.producto,
                     "category_name": assignment.category_name,
                     "product_order": assignment.product_order,
+                    "linea": assignment.linea,
                 }
                 for assignment in sorted(
                     state.assignments.values(),
@@ -115,6 +120,9 @@ class ShipmentConfigService:
         for record, _index in items:
             key = product_key(record.cod_prod, record.cod_eqv, record.producto)
             if key in state.assignments:
+                if not state.assignments[key].linea and record.linea:
+                    state.assignments[key].linea = record.linea
+                    changed = True
                 continue
             category = LEGACY_CATEGORY_MAP.get(record.categoria, record.categoria)
             if state.category_by_name(category) is None:
@@ -128,6 +136,7 @@ class ShipmentConfigService:
                 producto=record.producto,
                 category_name=category,
                 product_order=order,
+                linea=record.linea,
             )
             changed = True
         return changed
@@ -141,6 +150,10 @@ class ShipmentConfigService:
                 next_order += 1
         for index, category in enumerate(state.sorted_categories()):
             category.order = index
+        unique: dict[str, ShipmentCategoryConfig] = {}
+        for category in state.sorted_categories():
+            unique.setdefault(category.name.casefold(), category)
+        state.categories = list(unique.values())
 
     def _normalize_assignments(self, state: ShipmentCategoryState) -> None:
         valid = {category.name.casefold(): category.name for category in state.categories}

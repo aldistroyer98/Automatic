@@ -8,7 +8,7 @@ from pathlib import Path
 CATEGORY_CONTROLS = "Controles y calibradores"
 CATEGORY_REAGENTS = "Reactivos principales"
 CATEGORY_CONSUMABLES = "Consumibles"
-CATEGORY_UNCLASSIFIED = "No clasificados"
+CATEGORY_UNCLASSIFIED = "Sin Categoría"
 
 CATEGORY_ORDER = {
     CATEGORY_CONTROLS: 0,

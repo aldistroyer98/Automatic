@@ -6,11 +6,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QApplication,
+    QCheckBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -18,7 +20,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
+    QWidgetAction,
     QWidget,
 )
 
@@ -28,6 +32,85 @@ from services.shipment_config_service import ShipmentConfigService
 from services.shipment_service import ShipmentService
 from services.shipment_powerbi_service import ShipmentPowerBIService
 from ui.dialogs import ShipmentCategoryDialog
+
+
+class ClientChecklistFilter(QToolButton):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setPopupMode(QToolButton.InstantPopup)
+        self._clients: list[str] = []
+        self._selected: set[str] = set()
+        self._updating = False
+        self._on_changed = None
+        self._menu = QMenu(self)
+        self.setMenu(self._menu)
+        self.setText("Clientes: Todos")
+
+    def set_on_changed(self, callback) -> None:
+        self._on_changed = callback
+
+    def set_clients(self, clients: list[str]) -> None:
+        previous_clients = set(self._clients)
+        previous_selected = set(self._selected)
+        was_all = not previous_clients or previous_selected == previous_clients
+        self._clients = list(clients)
+        available = set(self._clients)
+        self._selected = available if was_all else previous_selected & available
+        self._rebuild_menu()
+        self._update_text()
+
+    def selected_clients(self) -> set[str]:
+        return set(self._selected)
+
+    def _rebuild_menu(self) -> None:
+        self._updating = True
+        self._menu.clear()
+        all_box = QCheckBox("Todo")
+        all_box.setChecked(bool(self._clients) and self._selected == set(self._clients))
+        all_box.stateChanged.connect(self._toggle_all)
+        self._add_checkbox_action(all_box)
+        self._menu.addSeparator()
+        for client in self._clients:
+            box = QCheckBox(client)
+            box.setChecked(client in self._selected)
+            box.stateChanged.connect(lambda _state, value=client: self._toggle_client(value))
+            self._add_checkbox_action(box)
+        self._updating = False
+
+    def _add_checkbox_action(self, checkbox: QCheckBox) -> None:
+        action = QWidgetAction(self._menu)
+        action.setDefaultWidget(checkbox)
+        self._menu.addAction(action)
+
+    def _toggle_all(self) -> None:
+        if self._updating:
+            return
+        self._selected = set(self._clients) if self._selected != set(self._clients) else set()
+        self._rebuild_menu()
+        self._notify()
+
+    def _toggle_client(self, client: str) -> None:
+        if self._updating:
+            return
+        if client in self._selected:
+            self._selected.remove(client)
+        else:
+            self._selected.add(client)
+        self._rebuild_menu()
+        self._notify()
+
+    def _notify(self) -> None:
+        self._update_text()
+        if self._on_changed is not None:
+            self._on_changed()
+
+    def _update_text(self) -> None:
+        if not self._clients or self._selected == set(self._clients):
+            self.setText("Clientes: Todos")
+        elif not self._selected:
+            self.setText("Clientes: Ninguno")
+        else:
+            self.setText(f"Clientes: {len(self._selected)}")
 
 
 class ShipmentTab(QWidget):
@@ -70,16 +153,22 @@ class ShipmentTab(QWidget):
 
         filters = QGridLayout()
         self.filter_boxes: dict[str, QComboBox] = {}
+        self.client_filter = ClientChecklistFilter(self)
+        self.client_filter.set_on_changed(self.refresh_preview)
+        filters.addWidget(QLabel("Cliente"), 0, 0)
+        filters.addWidget(self.client_filter, 1, 0)
         labels = (
-            ("clients", "Cliente"),
             ("years", "Año"),
             ("lines", "Línea"),
             ("comodatos", "Comodato"),
         )
-        for index, (key, label) in enumerate(labels):
+        for index, (key, label) in enumerate(labels, start=1):
             box = QComboBox()
             box.addItem("Todos", None)
-            box.currentIndexChanged.connect(self.refresh_preview)
+            if key in {"years", "lines"}:
+                box.currentIndexChanged.connect(self._handle_filter_changed)
+            else:
+                box.currentIndexChanged.connect(self.refresh_preview)
             self.filter_boxes[key] = box
             filters.addWidget(QLabel(label), 0, index)
             filters.addWidget(box, 1, index)
@@ -93,8 +182,10 @@ class ShipmentTab(QWidget):
         )
         self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.preview_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.preview_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self.preview_table.horizontalHeader().setStretchLastSection(False)
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -163,7 +254,6 @@ class ShipmentTab(QWidget):
         assert self.analysis is not None
         records = self.analysis.records
         values = {
-            "clients": self.analysis.clients,
             "years": self.analysis.years,
             "lines": self.analysis.lines,
             "comodatos": sorted({record.comodato for record in records if record.comodato}),
@@ -175,6 +265,25 @@ class ShipmentTab(QWidget):
             for value in values[key]:
                 box.addItem(str(value), value)
             box.blockSignals(False)
+        self._update_client_filter()
+
+    def _handle_filter_changed(self) -> None:
+        self._update_client_filter()
+        self.refresh_preview()
+
+    def _update_client_filter(self) -> None:
+        if self.analysis is None:
+            self.client_filter.set_clients([])
+            return
+        year = self.filter_boxes["years"].currentData()
+        line = self.filter_boxes["lines"].currentData()
+        clients = sorted({
+            record.cliente
+            for record in self.analysis.records
+            if (year is None or record.anio == year)
+            and (line is None or record.linea == line)
+        })
+        self.client_filter.set_clients(clients)
 
     def _options(self) -> ShipmentOptions:
         kwargs = {
@@ -188,6 +297,12 @@ class ShipmentTab(QWidget):
         for key, box in self.filter_boxes.items():
             value = box.currentData()
             kwargs[key] = {value} if value is not None else set()
+        selected_clients = self.client_filter.selected_clients()
+        visible_clients = set(self.client_filter._clients)
+        if visible_clients and not selected_clients:
+            kwargs["clients"] = {"__NO_CLIENT_SELECTED__"}
+        else:
+            kwargs["clients"] = selected_clients if selected_clients != visible_clients else set()
         return ShipmentOptions(**kwargs)
 
     def refresh_preview(self) -> None:
@@ -203,10 +318,7 @@ class ShipmentTab(QWidget):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if column in (1, 2, 3, 4, 6, 7, 8):
-                    item.setTextAlignment(Qt.AlignCenter)
-                else:
-                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                item.setTextAlignment(Qt.AlignCenter)
                 self.preview_table.setItem(row_index, column, item)
         self._resize_preview_columns()
         if len(rows) > len(shown):
@@ -221,21 +333,17 @@ class ShipmentTab(QWidget):
             return
 
         ratios = (12, 2, 4, 4, 4, 8, 2, 2, 2)
-        visible_units = 40
-        total_units = 42
+        total_units = sum(ratios)  # 40
+
         viewport_width = self.preview_table.viewport().width()
-        scrollbar = self.preview_table.verticalScrollBar()
-        scrollbar_width = scrollbar.sizeHint().width() if scrollbar.isVisible() else 0
-        total_width = max(1, viewport_width - scrollbar_width)
-        margin_unit = max(4, int(total_width / total_units))
-        available = max(1, total_width - (margin_unit * 2))
+        available = max(420, viewport_width - 2)
 
         used = 0
         for column, ratio in enumerate(ratios):
             if column == len(ratios) - 1:
                 width = max(1, available - used)
             else:
-                width = max(1, int(available * ratio / visible_units))
+                width = max(1, int(available * ratio / total_units))
                 used += width
 
             self.preview_table.setColumnWidth(column, width)
@@ -308,6 +416,7 @@ class ShipmentTab(QWidget):
         for box in self.filter_boxes.values():
             box.clear()
             box.addItem("Todos", None)
+        self.client_filter.set_clients([])
 
     def open_category_dialog(self) -> None:
         if self.analysis is None:
@@ -332,6 +441,7 @@ class ShipmentTab(QWidget):
             self.category_config,
             self.config_service,
             active_product_keys,
+            self.analysis.lines,
             self,
         )
         dialog.exec()

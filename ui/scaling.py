@@ -7,7 +7,7 @@ from PySide6.QtCore import QSize
 
 BASE_WIDTH = 1440
 BASE_HEIGHT = 810
-AVAILABLE_SCALES = (1.0, 0.85, 0.75, 0.65, 0.5)
+AVAILABLE_SCALES = (1.0, 0.9, 0.8, 0.7, 0.6)
 DEFAULT_SCALE = 1.0
 
 

@@ -37,14 +37,17 @@ class ShipmentCategoryDialog(QDialog):
         category_config: ShipmentCategoryState,
         config_service: ShipmentConfigService,
         active_product_keys: Collection[str],
+        lines: Collection[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.category_config = category_config
         self.config_service = config_service
         self.active_product_keys = set(active_product_keys)
+        self.lines = tuple(sorted({line for line in (lines or ()) if line}))
         self._loading = False
         self._active_table = ""
+        self.line_filter = ""
         self.setWindowTitle("Configurar categorías")
         self.resize(1040, 620)
         self._build_ui()
@@ -52,6 +55,16 @@ class ShipmentCategoryDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Línea comercial:"))
+        self.line_combo = QComboBox(self)
+        self.line_combo.addItem("Todos", "")
+        for line in self.lines:
+            self.line_combo.addItem(line, line)
+        self.line_combo.currentIndexChanged.connect(self._line_filter_changed)
+        filter_row.addWidget(self.line_combo, 1)
+        root.addLayout(filter_row)
+
         content = QHBoxLayout()
 
         left = QVBoxLayout()
@@ -269,9 +282,10 @@ class ShipmentCategoryDialog(QDialog):
         assignment = self.category_config.assignments.get(key)
         if assignment is None or assignment.category_name == category_name:
             return
+        current_category = self._selected_category_name()
         assignment.category_name = category_name
         assignment.product_order = self._next_product_order(category_name)
-        self._persist_and_refresh(category_name, key)
+        self._persist_and_refresh(current_category)
 
     def move_product_to(self, action: str) -> None:
         assignment = self._selected_assignment()
@@ -340,6 +354,7 @@ class ShipmentCategoryDialog(QDialog):
             assignment
             for assignment in self.category_config.assignments.values()
             if assignment.product_key in self.active_product_keys
+            and (not self.line_filter or assignment.linea == self.line_filter)
         ]
 
     def _assignments_for_category(self, category_name: str) -> list[ProductCategoryAssignment]:
@@ -373,3 +388,7 @@ class ShipmentCategoryDialog(QDialog):
         if action == "last":
             return length - 1
         return index
+
+    def _line_filter_changed(self) -> None:
+        self.line_filter = str(self.line_combo.currentData() or "")
+        self.refresh_tables()

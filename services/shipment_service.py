@@ -340,22 +340,15 @@ class ShipmentService:
         records = self._apply_category_config(analysis.records, category_config)
         filtered = self.filter_records(records, options)
         grouped: dict[tuple[str, int, str, str, str, str, str], list[ShipmentRecord]] = defaultdict(list)
-        block_months: dict[tuple[str, int, str], list[int]] = defaultdict(list)
         for record in filtered:
             grouped[
                 record.cliente, record.anio, record.linea, record.cod_prod,
                 record.cod_eqv, record.producto, record.categoria
             ].append(record)
-            if record.cantidad > 0:
-                block_months[(record.cliente, record.anio, record.linea)].append(record.mes)
         result = []
         for key, rows in grouped.items():
-            months = block_months[(key[0], key[1], key[2])]
-            closed_month = self._last_valid_month(key[1], options)
-            considered = [month for month in months if month <= closed_month]
-            first_month = min(considered) if considered else 0
-            last_month = max(considered) if considered else 0
-            divisor = last_month - first_month + 1 if considered else 0
+            first_month, last_month = self._active_month_period(rows, key[1], options)
+            divisor = last_month - first_month + 1 if first_month and last_month else 0
             total = sum(row.cantidad for row in rows if first_month <= row.mes <= last_month)
             result.append(ShipmentPreviewRow(*key, total, divisor, total / divisor if divisor else 0))
         return sorted(
@@ -453,19 +446,31 @@ class ShipmentService:
             if record.cantidad > 0
             and record.mes <= self._last_valid_month(record.anio, options)
         ]
+        block_groups: dict[tuple[str, str, int], list[ShipmentRecord]] = defaultdict(list)
+        total_groups: dict[tuple[str, int], list[ShipmentRecord]] = defaultdict(list)
+        product_groups: dict[str, list[ShipmentRecord]] = defaultdict(list)
+        client_product_groups: dict[tuple[str, str], list[ShipmentRecord]] = defaultdict(list)
         for record in valid_records:
-            block_key = (record.cliente, record.linea, record.anio)
-            total_key = (record.linea, record.anio)
-            block_periods[block_key] = self._extend_month_period(block_periods.get(block_key), record.mes)
-            total_periods[total_key] = self._extend_month_period(total_periods.get(total_key), record.mes)
-            shipment_date = self._month_date(record)
-            product_periods[record.cod_prod] = self._extend_date_period(
-                product_periods.get(record.cod_prod), shipment_date
-            )
-            client_product_key = (record.cliente, record.cod_prod)
-            client_product_periods[client_product_key] = self._extend_date_period(
-                client_product_periods.get(client_product_key), shipment_date
-            )
+            block_groups[(record.cliente, record.linea, record.anio)].append(record)
+            total_groups[(record.linea, record.anio)].append(record)
+            product_groups[record.cod_prod].append(record)
+            client_product_groups[(record.cliente, record.cod_prod)].append(record)
+        for key, group in block_groups.items():
+            period = self._active_month_period(group, key[2], options)
+            if period != (0, 0):
+                block_periods[key] = period
+        for key, group in total_groups.items():
+            period = self._active_month_period(group, key[1], options)
+            if period != (0, 0):
+                total_periods[key] = period
+        for key, group in product_groups.items():
+            period = self._active_date_period(group, options)
+            if period is not None:
+                product_periods[key] = period
+        for key, group in client_product_groups.items():
+            period = self._active_date_period(group, options)
+            if period is not None:
+                client_product_periods[key] = period
 
         seen_blocks: set[tuple[str, str, int]] = set()
         seen_totals: set[tuple[str, int]] = set()
@@ -533,9 +538,74 @@ class ShipmentService:
                 cell.number_format = "mmm-yyyy"
         worksheet.freeze_panes = None
 
+    def _active_month_period(
+        self,
+        records: Sequence[ShipmentRecord],
+        year: int,
+        options: ShipmentOptions,
+    ) -> tuple[int, int]:
+        closed_month = self._last_valid_month(year, options)
+        positive_months = {
+            record.mes
+            for record in records
+            if record.anio == year and record.cantidad > 0 and record.mes <= closed_month
+        }
+        if not positive_months:
+            return (0, 0)
+        start = min(positive_months)
+        empty_streak = 0
+        for month in range(start, closed_month + 1):
+            if month in positive_months:
+                empty_streak = 0
+                continue
+            empty_streak += 1
+            if empty_streak == 3:
+                return (start, month - 3)
+        return (start, closed_month)
+
+    def _active_date_period(
+        self,
+        records: Sequence[ShipmentRecord],
+        options: ShipmentOptions,
+    ) -> tuple[date, date] | None:
+        positive_periods = sorted(
+            {
+                (record.anio, record.mes)
+                for record in records
+                if record.cantidad > 0 and record.mes <= self._last_valid_month(record.anio, options)
+            }
+        )
+        if not positive_periods:
+            return None
+        start_year, start_month = positive_periods[0]
+        last_year = max(max(year for year, _month in positive_periods), self.today.year)
+        end_year = min(last_year, self.today.year)
+        current_year, current_month = start_year, start_month
+        empty_streak = 0
+        positives = set(positive_periods)
+        while (current_year, current_month) <= (end_year, 12):
+            closed_month = self._last_valid_month(current_year, options)
+            if closed_month == 0:
+                break
+            if current_month > closed_month:
+                current_year, current_month = current_year + 1, 1
+                continue
+            if (current_year, current_month) in positives:
+                empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak == 3:
+                    end_year, end_month = self._shift_month(current_year, current_month, -3)
+                    return (date(start_year, start_month, 1), date(end_year, end_month, 1))
+            if current_year == self.today.year and current_month >= self._last_valid_month(current_year, options):
+                break
+            current_year, current_month = self._shift_month(current_year, current_month, 1)
+        return (date(start_year, start_month, 1), date(current_year, current_month, 1))
+
     @staticmethod
-    def _extend_month_period(period: tuple[int, int] | None, month: int) -> tuple[int, int]:
-        return (month, month) if period is None else (min(period[0], month), max(period[1], month))
+    def _shift_month(year: int, month: int, offset: int) -> tuple[int, int]:
+        index = year * 12 + month - 1 + offset
+        return (index // 12, index % 12 + 1)
 
     @staticmethod
     def _extend_date_period(period: tuple[date, date] | None, value: date) -> tuple[date, date]:
@@ -617,8 +687,17 @@ class ShipmentService:
                 row += 1
             row += 1
 
-        for column, width in enumerate((12, 12, 36, 12, 12, 5, 5, 5), 1):
-            worksheet.column_dimensions[get_column_letter(column)].width = width
+        widths = {
+            1: 12,  # A - CodProd
+            2: 12,  # B - CodEqv
+            3: 36,  # C - Producto
+            4: 12,  # D - Fecha Inicio
+            5: 12,  # E - Fecha Fin
+            6: 5,   # F - Total
+            7: 5,   # G - Mes
+            8: 5,   # H - Prod
+        }
+        self._set_column_widths(worksheet, widths)
         worksheet.freeze_panes = None
 
     def _write_report_sheet(
@@ -698,9 +777,30 @@ class ShipmentService:
                     row += 1
                 row += 1
         worksheet.freeze_panes = None
-        widths = {1: 12, 2: 12, 3: 36, 16: 5, 17: 5, 18: 5}
-        for column in range(1, 19):
-            worksheet.column_dimensions[get_column_letter(column)].width = widths.get(column, 4)
+        widths = {
+            1: 12,   # A - CodProd
+            2: 12,   # B - CodEqv
+            3: 36,   # C - Producto
+
+            4: 4,    # D - Ene
+            5: 4,    # E - Feb
+            6: 4,    # F - Mar
+            7: 4,    # G - Abr
+            8: 4,    # H - May
+            9: 4,    # I - Jun
+            10: 4,   # J - Jul
+            11: 4,   # K - Ago
+            12: 4,   # L - Set
+            13: 4,   # M - Oct
+            14: 4,   # N - Nov
+            15: 4,   # O - Dic
+
+            16: 5,   # P - Total
+            17: 5,   # Q - Mes
+            18: 5,   # R - Prod
+        }
+
+        self._set_column_widths(worksheet, widths)
 
     def _block_period(
         self,
@@ -708,13 +808,7 @@ class ShipmentService:
         year: int,
         options: ShipmentOptions,
     ) -> tuple[int, int]:
-        closed_month = self._last_valid_month(year, options)
-        months = [
-            record.mes
-            for record in records
-            if record.cantidad > 0 and record.mes <= closed_month
-        ]
-        return (min(months), max(months)) if months else (0, 0)
+        return self._active_month_period(records, year, options)
 
     def _block_months_formula(
         self,
@@ -964,6 +1058,20 @@ class ShipmentService:
     @staticmethod
     def _excel_string(value: object) -> str:
         return '"' + str(value).replace('"', '""') + '"'
+
+    @staticmethod
+    def _set_column_widths(worksheet, widths: dict[int, int | float]) -> None:
+        for column, width in widths.items():
+            worksheet.column_dimensions[get_column_letter(column)].width = (
+                ShipmentService._excel_column_width(float(width))
+            )
+
+    @staticmethod
+    def _excel_column_width(display_width: float) -> float:
+        # Excel's width dialog subtracts the standard 5-pixel cell padding.
+        # With Calibri's 7-pixel max digit width, openpyxl width=36 is shown
+        # by Excel as 35.29. Add the padding back so Excel displays 36.00.
+        return display_width + (5 / 7)
 
     @staticmethod
     def _style_title(worksheet, row: int, last_column: int) -> None:

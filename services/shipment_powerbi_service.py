@@ -19,6 +19,7 @@ from models.shipment import (
     ShipmentOptions,
     ShipmentRecord,
 )
+from models.shipment_config import CATEGORY_WITHOUT_CATEGORY, LEGACY_CATEGORY_MAP
 from services.shipment_service import ShipmentService, ShipmentValidationError
 
 
@@ -26,7 +27,8 @@ TYPE_LABELS = {
     CATEGORY_CONTROLS: "Control/Calibrador",
     CATEGORY_REAGENTS: "Reactivo principal",
     CATEGORY_CONSUMABLES: "Consumible",
-    CATEGORY_UNCLASSIFIED: "No clasificado",
+    CATEGORY_UNCLASSIFIED: CATEGORY_WITHOUT_CATEGORY,
+    CATEGORY_WITHOUT_CATEGORY: CATEGORY_WITHOUT_CATEGORY,
 }
 MONTH_NAMES = (
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -124,15 +126,19 @@ class ShipmentPowerBIService:
 
         lines = sorted({record.linea for record in records})
         line_ids = {line: f"L{index:04d}" for index, line in enumerate(lines, 1)}
-        categories = sorted(CATEGORY_ORDER, key=lambda category: CATEGORY_ORDER[category])
+        categories = sorted(
+            {self._category_name(record.categoria) for record in records},
+            key=self._category_order,
+        )
         type_ids = {
-            category: f"T{CATEGORY_ORDER[category] + 1:02d}" for category in categories
+            category: f"T{index + 1:02d}" for index, category in enumerate(categories)
         }
 
         fact_rows = []
         for index, record in enumerate(records, 1):
             shipment_date = self._record_date(record)
-            category_label = TYPE_LABELS[record.categoria]
+            category = self._category_name(record.categoria)
+            category_label = TYPE_LABELS.get(category, category)
             fact_rows.append(
                 (
                     f"E{index:07d}",
@@ -144,7 +150,7 @@ class ShipmentPowerBIService:
                     client_ids[record.cliente],
                     product_ids[record.cod_prod],
                     line_ids[record.linea],
-                    type_ids[record.categoria],
+                    type_ids[category],
                     record.cod_prod,
                     record.cod_eqv,
                     record.cliente,
@@ -171,7 +177,7 @@ class ShipmentPowerBIService:
         ]
         product_rows = []
         for order, record in enumerate(products, 1):
-            category = record.categoria
+            category = self._category_name(record.categoria)
             product_rows.append(
                 (
                     product_ids[record.cod_prod],
@@ -179,18 +185,18 @@ class ShipmentPowerBIService:
                     record.cod_eqv,
                     record.producto,
                     record.producto,
-                    TYPE_LABELS[category],
-                    CATEGORY_ORDER[category] + 1,
+                    TYPE_LABELS.get(category, category),
+                    self._category_order(category) + 1,
                     order,
                     category == CATEGORY_CONTROLS,
                     category == CATEGORY_REAGENTS,
                     category == CATEGORY_CONSUMABLES,
-                    category == CATEGORY_UNCLASSIFIED,
+                    category == CATEGORY_WITHOUT_CATEGORY,
                 )
             )
         line_rows = [(line_ids[line], line) for line in lines]
         type_rows = [
-            (type_ids[category], TYPE_LABELS[category], CATEGORY_ORDER[category] + 1)
+            (type_ids[category], TYPE_LABELS.get(category, category), self._category_order(category) + 1)
             for category in categories
         ]
         date_rows = self._date_rows(records)
@@ -298,6 +304,18 @@ class ShipmentPowerBIService:
             if not 1 <= record.mes <= 12 or not 1900 <= record.anio <= 9999:
                 raise ShipmentValidationError(f"Registro {index}: período inválido")
 
+    @staticmethod
+    def _category_name(category: str) -> str:
+        return LEGACY_CATEGORY_MAP.get(category, category)
+
+    @staticmethod
+    def _category_order(category: str) -> int:
+        visual_order = {
+            LEGACY_CATEGORY_MAP.get(key, key): value
+            for key, value in CATEGORY_ORDER.items()
+        }
+        return visual_order.get(category, 1_000_000)
+
     def _copy_templates(self, output_dir: Path) -> list[Path]:
         copied = []
         for filename in ("EnvioDashboard.pbit", "EnvioDashboard.pbix"):
@@ -359,8 +377,8 @@ CALCULATE([Total Enviado], DimTipoProducto[TipoProductoInterno] = "Reactivo prin
 Total Consumibles =
 CALCULATE([Total Enviado], DimTipoProducto[TipoProductoInterno] = "Consumible")
 
-Total No Clasificados =
-CALCULATE([Total Enviado], DimTipoProducto[TipoProductoInterno] = "No clasificado")
+Total Sin Categoría =
+CALCULATE([Total Enviado], DimTipoProducto[TipoProductoInterno] = "Sin Categoría")
 
 Promedio Mensual Controles =
 CALCULATE([Promedio Mensual], DimTipoProducto[TipoProductoInterno] = "Control/Calibrador")
