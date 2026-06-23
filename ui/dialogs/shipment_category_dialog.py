@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -27,6 +28,7 @@ from models.shipment_config import (
     ProductCategoryAssignment,
     ShipmentCategoryConfig,
     ShipmentCategoryState,
+    normalize_text,
 )
 from services.shipment_config_service import ShipmentConfigService
 
@@ -48,6 +50,7 @@ class ShipmentCategoryDialog(QDialog):
         self._loading = False
         self._active_table = ""
         self.line_filter = ""
+        self.product_search = ""
         self.setWindowTitle("Configurar categorías")
         self.resize(1040, 620)
         self._build_ui()
@@ -56,13 +59,26 @@ class ShipmentCategoryDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Línea comercial:"))
+        filter_row.addWidget(QLabel("Línea:"))
         self.line_combo = QComboBox(self)
         self.line_combo.addItem("Todos", "")
         for line in self.lines:
             self.line_combo.addItem(line, line)
         self.line_combo.currentIndexChanged.connect(self._line_filter_changed)
-        filter_row.addWidget(self.line_combo, 1)
+        filter_row.addWidget(self.line_combo, 2)
+        filter_row.addStretch(1)
+        filter_row.addWidget(QLabel("Buscar:"))
+        self.search_field = QLineEdit(self)
+        self.search_field.setClearButtonEnabled(True)
+        self.search_field.textChanged.connect(self._product_search_changed)
+        filter_row.addWidget(self.search_field, 3)
+        filter_row.addStretch(1)
+        filter_row.addWidget(QLabel("Categoría:"))
+        self.bulk_category_combo = QComboBox(self)
+        filter_row.addWidget(self.bulk_category_combo, 2)
+        move_button = QPushButton("Mover", self)
+        move_button.clicked.connect(self.move_selected_products_to_category)
+        filter_row.addWidget(move_button)
         root.addLayout(filter_row)
 
         content = QHBoxLayout()
@@ -118,6 +134,7 @@ class ShipmentCategoryDialog(QDialog):
         self.product_table.verticalHeader().setVisible(False)
         self.product_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.product_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.product_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.product_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.product_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -143,6 +160,7 @@ class ShipmentCategoryDialog(QDialog):
         self._loading = True
         try:
             categories = self._visible_categories()
+            self._refresh_bulk_category_combo()
             self.category_table.setRowCount(len(categories))
             selected_row = 0
             for row, category in enumerate(categories):
@@ -287,6 +305,28 @@ class ShipmentCategoryDialog(QDialog):
         assignment.product_order = self._next_product_order(category_name)
         self._persist_and_refresh(current_category)
 
+    def move_selected_products_to_category(self) -> None:
+        target_category = str(self.bulk_category_combo.currentData() or "").strip()
+        if not target_category or self.category_config.category_by_name(target_category) is None:
+            QMessageBox.information(self, "Categorías", "Selecciona una categoría destino.")
+            return
+        assignments = self._selected_assignments()
+        if not assignments:
+            return
+
+        current_category = self._selected_category_name()
+        next_order = self._next_product_order(target_category)
+        changed = False
+        for assignment in assignments:
+            if assignment.category_name == target_category:
+                continue
+            assignment.category_name = target_category
+            assignment.product_order = next_order
+            next_order += 1
+            changed = True
+        if changed:
+            self._persist_and_refresh(current_category)
+
     def move_product_to(self, action: str) -> None:
         assignment = self._selected_assignment()
         if assignment is None:
@@ -310,10 +350,20 @@ class ShipmentCategoryDialog(QDialog):
         self.config_service.save(self.category_config)
         self.refresh_tables(selected_category, selected_product_key)
 
+    def _refresh_bulk_category_combo(self) -> None:
+        current = str(self.bulk_category_combo.currentData() or "")
+        self.bulk_category_combo.blockSignals(True)
+        self.bulk_category_combo.clear()
+        for name in self.category_config.category_names():
+            self.bulk_category_combo.addItem(name, name)
+        index = self.bulk_category_combo.findData(current)
+        self.bulk_category_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.bulk_category_combo.blockSignals(False)
+
     def _visible_categories(self) -> list[ShipmentCategoryConfig]:
         active_names = {
             assignment.category_name
-            for assignment in self._active_assignments()
+            for assignment in self._active_assignments(include_search=False)
         }
         result = []
         for category in self.category_config.sorted_categories():
@@ -349,12 +399,36 @@ class ShipmentCategoryDialog(QDialog):
             return None
         return assignments[row]
 
-    def _active_assignments(self) -> list[ProductCategoryAssignment]:
+    def _selected_assignments(self, show_message: bool = True) -> list[ProductCategoryAssignment]:
+        assignments = self._assignments_for_category(self._selected_category_name())
+        selection_model = self.product_table.selectionModel()
+        rows = []
+        if selection_model is not None:
+            rows = sorted({index.row() for index in selection_model.selectedRows()})
+        if not rows and self.product_table.currentRow() >= 0:
+            rows = [self.product_table.currentRow()]
+        result = [
+            assignments[row]
+            for row in rows
+            if 0 <= row < len(assignments)
+        ]
+        if not result and show_message:
+            QMessageBox.information(self, "Categorías", "Selecciona uno o más productos.")
+        return result
+
+    def _active_assignments(self, *, include_search: bool = True) -> list[ProductCategoryAssignment]:
+        search = normalize_text(self.product_search) if include_search else ""
         return [
             assignment
             for assignment in self.category_config.assignments.values()
             if assignment.product_key in self.active_product_keys
             and (not self.line_filter or assignment.linea == self.line_filter)
+            and (
+                not search
+                or search in normalize_text(
+                    f"{assignment.cod_prod} {assignment.cod_eqv} {assignment.producto}"
+                )
+            )
         ]
 
     def _assignments_for_category(self, category_name: str) -> list[ProductCategoryAssignment]:
@@ -392,3 +466,7 @@ class ShipmentCategoryDialog(QDialog):
     def _line_filter_changed(self) -> None:
         self.line_filter = str(self.line_combo.currentData() or "")
         self.refresh_tables()
+
+    def _product_search_changed(self, text: str) -> None:
+        self.product_search = text
+        self.refresh_products()

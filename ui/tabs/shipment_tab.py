@@ -6,13 +6,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QApplication,
-    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMenu,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -20,97 +22,146 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
-    QWidgetAction,
     QWidget,
 )
 
 from app.paths import get_app_paths
-from models.shipment import ShipmentAnalysis, ShipmentOptions
+from models.shipment import ShipmentAnalysis, ShipmentOptions, ShipmentRecord
 from services.shipment_config_service import ShipmentConfigService
 from services.shipment_service import ShipmentService
 from services.shipment_powerbi_service import ShipmentPowerBIService
 from ui.dialogs import ShipmentCategoryDialog
 
 
-class ClientChecklistFilter(QToolButton):
-    def __init__(self, parent=None) -> None:
+class ClientFilterDialog(QDialog):
+    def __init__(
+        self,
+        records: tuple[ShipmentRecord, ...],
+        selected_clients: set[str],
+        initial_filters: dict[str, object],
+        parent=None,
+    ) -> None:
         super().__init__(parent)
-        self.setPopupMode(QToolButton.InstantPopup)
-        self._clients: list[str] = []
-        self._selected: set[str] = set()
+        self.records = records
+        self._selected_clients = set(selected_clients)
         self._updating = False
-        self._on_changed = None
-        self._menu = QMenu(self)
-        self.setMenu(self._menu)
-        self.setText("Clientes: Todos")
-
-    def set_on_changed(self, callback) -> None:
-        self._on_changed = callback
-
-    def set_clients(self, clients: list[str]) -> None:
-        previous_clients = set(self._clients)
-        previous_selected = set(self._selected)
-        was_all = not previous_clients or previous_selected == previous_clients
-        self._clients = list(clients)
-        available = set(self._clients)
-        self._selected = available if was_all else previous_selected & available
-        self._rebuild_menu()
-        self._update_text()
+        self.filter_boxes: dict[str, QComboBox] = {}
+        self.setWindowTitle("Filtro de clientes")
+        self.resize(520, 560)
+        self._build_ui()
+        self._set_initial_filters(initial_filters)
+        self._refresh_clients()
 
     def selected_clients(self) -> set[str]:
-        return set(self._selected)
+        return set(self._selected_clients)
 
-    def _rebuild_menu(self) -> None:
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+
+        filters = QGridLayout()
+        values = {
+            "years": sorted({record.anio for record in self.records}),
+            "lines": sorted({record.linea for record in self.records if record.linea}),
+            "comodatos": sorted({record.comodato for record in self.records if record.comodato}),
+        }
+        labels = (
+            ("years", "Año"),
+            ("lines", "Línea"),
+            ("comodatos", "Comodato"),
+        )
+        for column, (key, label) in enumerate(labels):
+            box = QComboBox(self)
+            box.addItem("Todos", None)
+            for value in values[key]:
+                box.addItem(str(value), value)
+            box.currentIndexChanged.connect(self._refresh_clients)
+            self.filter_boxes[key] = box
+            filters.addWidget(QLabel(label, self), 0, column)
+            filters.addWidget(box, 1, column)
+            filters.setColumnStretch(column, 1)
+        root.addLayout(filters)
+
+        self.count_label = QLabel(self)
+        root.addWidget(self.count_label)
+
+        self.client_list = QListWidget(self)
+        self.client_list.itemChanged.connect(self._client_item_changed)
+        root.addWidget(self.client_list, 1)
+
+        selection_row = QHBoxLayout()
+        select_visible_button = QPushButton("Seleccionar visibles", self)
+        select_visible_button.clicked.connect(self._select_visible_clients)
+        clear_button = QPushButton("Limpiar", self)
+        clear_button.clicked.connect(self._clear_clients)
+        selection_row.addWidget(select_visible_button)
+        selection_row.addWidget(clear_button)
+        selection_row.addStretch(1)
+        root.addLayout(selection_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("Aplicar")
+        buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _set_initial_filters(self, initial_filters: dict[str, object]) -> None:
+        for key, value in initial_filters.items():
+            box = self.filter_boxes.get(key)
+            if box is None:
+                continue
+            index = box.findData(value)
+            if index >= 0:
+                box.setCurrentIndex(index)
+
+    def _refresh_clients(self) -> None:
+        clients = self._filtered_clients()
         self._updating = True
-        self._menu.clear()
-        all_box = QCheckBox("Todo")
-        all_box.setChecked(bool(self._clients) and self._selected == set(self._clients))
-        all_box.stateChanged.connect(self._toggle_all)
-        self._add_checkbox_action(all_box)
-        self._menu.addSeparator()
-        for client in self._clients:
-            box = QCheckBox(client)
-            box.setChecked(client in self._selected)
-            box.stateChanged.connect(lambda _state, value=client: self._toggle_client(value))
-            self._add_checkbox_action(box)
+        self.client_list.clear()
+        for client in clients:
+            item = QListWidgetItem(client)
+            item.setData(Qt.UserRole, client)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if client in self._selected_clients else Qt.Unchecked)
+            self.client_list.addItem(item)
         self._updating = False
+        self._update_count(len(clients))
 
-    def _add_checkbox_action(self, checkbox: QCheckBox) -> None:
-        action = QWidgetAction(self._menu)
-        action.setDefaultWidget(checkbox)
-        self._menu.addAction(action)
-
-    def _toggle_all(self) -> None:
+    def _client_item_changed(self, item: QListWidgetItem) -> None:
         if self._updating:
             return
-        self._selected = set(self._clients) if self._selected != set(self._clients) else set()
-        self._rebuild_menu()
-        self._notify()
-
-    def _toggle_client(self, client: str) -> None:
-        if self._updating:
-            return
-        if client in self._selected:
-            self._selected.remove(client)
+        client = str(item.data(Qt.UserRole) or "")
+        if item.checkState() == Qt.Checked:
+            self._selected_clients.add(client)
         else:
-            self._selected.add(client)
-        self._rebuild_menu()
-        self._notify()
+            self._selected_clients.discard(client)
+        self._update_count(len(self._filtered_clients()))
 
-    def _notify(self) -> None:
-        self._update_text()
-        if self._on_changed is not None:
-            self._on_changed()
+    def _select_visible_clients(self) -> None:
+        self._selected_clients.update(self._filtered_clients())
+        self._refresh_clients()
 
-    def _update_text(self) -> None:
-        if not self._clients or self._selected == set(self._clients):
-            self.setText("Clientes: Todos")
-        elif not self._selected:
-            self.setText("Clientes: Ninguno")
-        else:
-            self.setText(f"Clientes: {len(self._selected)}")
+    def _clear_clients(self) -> None:
+        self._selected_clients.clear()
+        self._refresh_clients()
+
+    def _filtered_clients(self) -> list[str]:
+        year = self.filter_boxes["years"].currentData()
+        line = self.filter_boxes["lines"].currentData()
+        comodato = self.filter_boxes["comodatos"].currentData()
+        return sorted({
+            record.cliente
+            for record in self.records
+            if (year is None or record.anio == year)
+            and (line is None or record.linea == line)
+            and (comodato is None or record.comodato == comodato)
+        })
+
+    def _update_count(self, visible_count: int) -> None:
+        self.count_label.setText(
+            f"Clientes visibles: {visible_count} | Seleccionados: {len(self._selected_clients)}"
+        )
 
 
 class ShipmentTab(QWidget):
@@ -126,6 +177,8 @@ class ShipmentTab(QWidget):
         self.config_service = ShipmentConfigService(get_app_paths().data_root / "shipment_categories.json")
         self.category_config = self.config_service.default_state()
         self.analysis: ShipmentAnalysis | None = None
+        self._advanced_clients_applied = False
+        self._advanced_client_selection: set[str] = set()
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -153,10 +206,19 @@ class ShipmentTab(QWidget):
 
         filters = QGridLayout()
         self.filter_boxes: dict[str, QComboBox] = {}
-        self.client_filter = ClientChecklistFilter(self)
-        self.client_filter.set_on_changed(self.refresh_preview)
+        self.client_combo = QComboBox(self)
+        self.client_combo.addItem("Todos", None)
+        self.client_combo.currentIndexChanged.connect(self._handle_client_combo_changed)
+        self.client_filter_button = QPushButton("Filtro", self)
+        self.client_filter_button.setEnabled(False)
+        self.client_filter_button.clicked.connect(self.open_client_filter_dialog)
+        client_box = QWidget(self)
+        client_layout = QHBoxLayout(client_box)
+        client_layout.setContentsMargins(0, 0, 0, 0)
+        client_layout.addWidget(self.client_combo, 3)
+        client_layout.addWidget(self.client_filter_button, 1)
         filters.addWidget(QLabel("Cliente"), 0, 0)
-        filters.addWidget(self.client_filter, 1, 0)
+        filters.addWidget(client_box, 1, 0)
         labels = (
             ("years", "Año"),
             ("lines", "Línea"),
@@ -165,10 +227,7 @@ class ShipmentTab(QWidget):
         for index, (key, label) in enumerate(labels, start=1):
             box = QComboBox()
             box.addItem("Todos", None)
-            if key in {"years", "lines"}:
-                box.currentIndexChanged.connect(self._handle_filter_changed)
-            else:
-                box.currentIndexChanged.connect(self.refresh_preview)
+            box.currentIndexChanged.connect(self.refresh_preview)
             self.filter_boxes[key] = box
             filters.addWidget(QLabel(label), 0, index)
             filters.addWidget(box, 1, index)
@@ -200,10 +259,11 @@ class ShipmentTab(QWidget):
         self.detail_button.toggled.connect(self._toggle_detail)
         action_row.addWidget(self.detail_button)
         action_row.addStretch(1)
+        self.status_label = QLabel("Carga una base de envíos para comenzar.", self)
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        action_row.addWidget(self.status_label, 4)
         layout.addLayout(action_row)
-
-        self.status_label = QLabel("Carga una base de envíos para comenzar.")
-        layout.addWidget(self.status_label)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -265,25 +325,69 @@ class ShipmentTab(QWidget):
             for value in values[key]:
                 box.addItem(str(value), value)
             box.blockSignals(False)
-        self._update_client_filter()
+        self._advanced_clients_applied = False
+        self._advanced_client_selection.clear()
+        self._populate_client_combo()
+        self.client_filter_button.setEnabled(True)
+        self._update_client_filter_button()
 
-    def _handle_filter_changed(self) -> None:
-        self._update_client_filter()
+    def _handle_client_combo_changed(self) -> None:
+        self._advanced_clients_applied = False
+        self._advanced_client_selection.clear()
+        self._update_client_filter_button()
         self.refresh_preview()
 
-    def _update_client_filter(self) -> None:
+    def _populate_client_combo(self) -> None:
+        current = self.client_combo.currentData()
+        clients = self.analysis.clients if self.analysis is not None else ()
+        self.client_combo.blockSignals(True)
+        self.client_combo.clear()
+        self.client_combo.addItem("Todos", None)
+        for client in clients:
+            self.client_combo.addItem(client, client)
+        index = self.client_combo.findData(current)
+        self.client_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.client_combo.blockSignals(False)
+
+    def open_client_filter_dialog(self) -> None:
         if self.analysis is None:
-            self.client_filter.set_clients([])
+            QMessageBox.information(self, "Filtro", "Primero carga y analiza una base de envíos.")
             return
-        year = self.filter_boxes["years"].currentData()
-        line = self.filter_boxes["lines"].currentData()
-        clients = sorted({
-            record.cliente
-            for record in self.analysis.records
-            if (year is None or record.anio == year)
-            and (line is None or record.linea == line)
-        })
-        self.client_filter.set_clients(clients)
+
+        all_clients = set(self.analysis.clients)
+        selected_client = self.client_combo.currentData()
+        if self._advanced_clients_applied:
+            initial_selection = set(self._advanced_client_selection)
+        elif selected_client is not None:
+            initial_selection = {str(selected_client)}
+        else:
+            initial_selection = set(all_clients)
+
+        dialog = ClientFilterDialog(
+            self.analysis.records,
+            initial_selection,
+            {key: box.currentData() for key, box in self.filter_boxes.items()},
+            self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        selected_clients = dialog.selected_clients()
+        self._advanced_client_selection = selected_clients
+        self._advanced_clients_applied = selected_clients != all_clients
+        self.client_combo.blockSignals(True)
+        self.client_combo.setCurrentIndex(0)
+        self.client_combo.blockSignals(False)
+        self._update_client_filter_button()
+        self.refresh_preview()
+
+    def _update_client_filter_button(self) -> None:
+        self.client_filter_button.setText("Filtro")
+        if self._advanced_clients_applied:
+            count = len(self._advanced_client_selection)
+            self.client_filter_button.setToolTip(f"Filtro avanzado activo: {count} clientes")
+        else:
+            self.client_filter_button.setToolTip("Abrir filtro avanzado de clientes")
 
     def _options(self) -> ShipmentOptions:
         kwargs = {
@@ -297,12 +401,15 @@ class ShipmentTab(QWidget):
         for key, box in self.filter_boxes.items():
             value = box.currentData()
             kwargs[key] = {value} if value is not None else set()
-        selected_clients = self.client_filter.selected_clients()
-        visible_clients = set(self.client_filter._clients)
-        if visible_clients and not selected_clients:
+        selected_client = self.client_combo.currentData()
+        if self._advanced_clients_applied and not self._advanced_client_selection:
             kwargs["clients"] = {"__NO_CLIENT_SELECTED__"}
+        elif self._advanced_clients_applied:
+            kwargs["clients"] = set(self._advanced_client_selection)
+        elif selected_client is not None:
+            kwargs["clients"] = {str(selected_client)}
         else:
-            kwargs["clients"] = selected_clients if selected_clients != visible_clients else set()
+            kwargs["clients"] = set()
         return ShipmentOptions(**kwargs)
 
     def refresh_preview(self) -> None:
@@ -416,7 +523,12 @@ class ShipmentTab(QWidget):
         for box in self.filter_boxes.values():
             box.clear()
             box.addItem("Todos", None)
-        self.client_filter.set_clients([])
+        self._advanced_clients_applied = False
+        self._advanced_client_selection.clear()
+        self.client_combo.clear()
+        self.client_combo.addItem("Todos", None)
+        self.client_filter_button.setEnabled(False)
+        self._update_client_filter_button()
 
     def open_category_dialog(self) -> None:
         if self.analysis is None:

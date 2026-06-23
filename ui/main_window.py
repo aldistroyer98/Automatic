@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         return reference_path if reference_path.exists() else None
 
     def _load_logo(self) -> None:
-        logo_path = self.paths.resource("resources/logos/SISA2.png")
+        logo_path = self.paths.resource("resources/logos/SISA1.png")
         if logo_path.exists():
             self._logo_pixmap = QPixmap(str(logo_path))
 
@@ -165,7 +165,8 @@ class MainWindow(QMainWindow):
 
     def _update_logo(self) -> None:
         if self._logo_pixmap.isNull():
-            self.logo_label.hide()
+            self.logo_label.setText("SISA")
+            self.logo_label.show()
             return
         height = self.ui_scale.px(54, minimum=36)
         pixmap = self._logo_pixmap.scaledToHeight(height, Qt.SmoothTransformation)
