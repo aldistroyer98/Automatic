@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from models.shipment import ShipmentRecord
 from models.shipment_config import (
@@ -25,6 +25,10 @@ class ShipmentConfigService:
             for index, (name, color) in enumerate(DEFAULT_CATEGORY_COLORS.items())
         ]
         return ShipmentCategoryState(categories=categories)
+
+    @staticmethod
+    def product_key_for_record(record: ShipmentRecord) -> str:
+        return product_key(record.cod_prod, record.cod_eqv, record.producto)
 
     def load(self) -> ShipmentCategoryState:
         if not self.path.exists():
@@ -87,11 +91,24 @@ class ShipmentConfigService:
         }
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def merge_products(self, state: ShipmentCategoryState, records: Iterable[ShipmentRecord]) -> bool:
+    def merge_products(
+        self,
+        state: ShipmentCategoryState,
+        records: Iterable[ShipmentRecord],
+        product_sort_key: Callable[[ShipmentRecord, int], object] | None = None,
+    ) -> bool:
         self._ensure_defaults(state)
         changed = False
         next_order_by_category = self._next_order_by_category(state)
-        for record in records:
+        unique_records: dict[str, tuple[ShipmentRecord, int]] = {}
+        for index, record in enumerate(records):
+            key = product_key(record.cod_prod, record.cod_eqv, record.producto)
+            unique_records.setdefault(key, (record, index))
+        items = sorted(
+            unique_records.values(),
+            key=lambda item: product_sort_key(item[0], item[1]) if product_sort_key else item[1],
+        )
+        for record, _index in items:
             key = product_key(record.cod_prod, record.cod_eqv, record.producto)
             if key in state.assignments:
                 continue

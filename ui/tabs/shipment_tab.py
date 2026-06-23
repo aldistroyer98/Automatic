@@ -40,7 +40,7 @@ class ShipmentTab(QWidget):
         self.service = service
         self.powerbi_service = powerbi_service or ShipmentPowerBIService(service)
         self.config_service = ShipmentConfigService(get_app_paths().data_root / "shipment_categories.json")
-        self.category_config = self.config_service.load()
+        self.category_config = self.config_service.default_state()
         self.analysis: ShipmentAnalysis | None = None
         self._build_ui()
 
@@ -86,8 +86,9 @@ class ShipmentTab(QWidget):
 
         self.preview_table = QTableWidget(0, 9)
         self.preview_table.setHorizontalHeaderLabels(
-            ("Cliente", "Año", "Línea", "CodProd", "CodEqv", "Producto", "Total", "Meses", "Prod")
+            ("Cliente", "Año", "Línea", "CodProd", "CodEqv", "Producto", "Total", "Meses", "Media")
         )
+        self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -129,7 +130,12 @@ class ShipmentTab(QWidget):
             return
         try:
             self.analysis = self.service.analyze(path)
-            changed = self.config_service.merge_products(self.category_config, self.analysis.records)
+            self.category_config = self.config_service.load()
+            changed = self.config_service.merge_products(
+                self.category_config,
+                self.analysis.records,
+                self._initial_product_sort_key,
+            )
             if changed:
                 self.config_service.save(self.category_config)
             self._populate_filters()
@@ -194,9 +200,27 @@ class ShipmentTab(QWidget):
                 if column in (1, 6, 7, 8):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.preview_table.setItem(row_index, column, item)
-        self.preview_table.resizeColumnsToContents()
+        self._resize_preview_columns()
         if len(rows) > len(shown):
             self._append(f"Vista previa limitada a {len(shown)} de {len(rows)} filas.")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_preview_columns()
+
+    def _resize_preview_columns(self) -> None:
+        if not hasattr(self, "preview_table"):
+            return
+        ratios = (14, 2, 6, 6, 6, 8, 2, 2, 2)
+        available = max(480, self.preview_table.viewport().width() - 2)
+        used = 0
+        for column, ratio in enumerate(ratios):
+            if column == len(ratios) - 1:
+                width = max(1, available - used)
+            else:
+                width = max(1, int(available * ratio / 48))
+                used += width
+            self.preview_table.setColumnWidth(column, width)
 
     def generate_report(self) -> None:
         if self.analysis is None:
@@ -258,6 +282,7 @@ class ShipmentTab(QWidget):
 
     def clear(self) -> None:
         self.analysis = None
+        self.category_config = self.config_service.default_state()
         self.path_field.clear()
         self.preview_table.setRowCount(0)
         self.log.clear()
@@ -267,15 +292,37 @@ class ShipmentTab(QWidget):
             box.addItem("Todos", None)
 
     def open_category_dialog(self) -> None:
-        if self.analysis is not None:
-            changed = self.config_service.merge_products(self.category_config, self.analysis.records)
-            if changed:
-                self.config_service.save(self.category_config)
-        dialog = ShipmentCategoryDialog(self.category_config, self.config_service, self)
+        if self.analysis is None:
+            QMessageBox.information(
+                self,
+                "Categorías",
+                "Primero carga y analiza una base de envíos para configurar las categorías.",
+            )
+            return
+        changed = self.config_service.merge_products(
+            self.category_config,
+            self.analysis.records,
+            self._initial_product_sort_key,
+        )
+        if changed:
+            self.config_service.save(self.category_config)
+        active_product_keys = {
+            self.config_service.product_key_for_record(record)
+            for record in self.analysis.records
+        }
+        dialog = ShipmentCategoryDialog(
+            self.category_config,
+            self.config_service,
+            active_product_keys,
+            self,
+        )
         dialog.exec()
         self.category_config = self.config_service.load()
-        if self.analysis is not None:
-            self.refresh_preview()
+        self.refresh_preview()
+
+    def _initial_product_sort_key(self, record, appearance_order: int):
+        base = self.service._product_sort(record.cod_prod, record.producto, record.cod_eqv)
+        return (base[0], base[2], base[3], appearance_order, base[4], base[5])
 
     def _append(self, text: str) -> None:
         self.log.appendPlainText(text)

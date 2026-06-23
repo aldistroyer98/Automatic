@@ -841,14 +841,15 @@ class ShipmentService:
         product: str,
         equivalent: str = "",
         category_config: ShipmentCategoryState | None = None,
-    ) -> tuple[int, int, int, str, str]:
+    ) -> tuple[int, int, int, int, str, str]:
         category = self._configured_category(code, equivalent, product, self.classify_product(product), category_config)
         consumable_position = self._consumable_position(product) if category in {CATEGORY_CONSUMABLES, CATEGORY_CONSUMABLE} else 0
         model_position = self._model_order.get(code, 1_000_000)
         return (
             self._category_order(category, category_config),
-            consumable_position,
             self._configured_product_order(code, equivalent, product, category_config, model_position),
+            consumable_position,
+            model_position,
             code.casefold(),
             product.casefold(),
         )
@@ -908,9 +909,9 @@ class ShipmentService:
         fallback: int,
     ) -> int:
         if category_config is None:
-            return fallback
+            return 1_000_000
         assignment = category_config.assignments.get(product_key(cod_prod, cod_eqv, producto))
-        return assignment.product_order if assignment is not None else fallback
+        return assignment.product_order if assignment is not None else 1_000_000
 
     @staticmethod
     def _category_fill(
