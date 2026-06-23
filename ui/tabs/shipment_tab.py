@@ -92,6 +92,15 @@ class ShipmentTab(QWidget):
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.preview_table = QTableWidget(0, 9)
+        self.preview_table.setHorizontalHeaderLabels(
+            ("Cliente", "Año", "Línea", "CodProd", "CodEqv", "Producto", "Total", "Meses", "Media")
+        )
+        self.preview_table.verticalHeader().setVisible(False)
+        self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.preview_table, 1)
 
         action_row = QHBoxLayout()
@@ -211,15 +220,29 @@ class ShipmentTab(QWidget):
     def _resize_preview_columns(self) -> None:
         if not hasattr(self, "preview_table"):
             return
-        ratios = (14, 2, 6, 6, 6, 8, 2, 2, 2)
-        available = max(480, self.preview_table.viewport().width() - 2)
+
+        ratios = (12, 2, 4, 4, 4, 8, 2, 2, 2)
+
+        total_units = 42
+        content_units = sum(ratios)  # 40
+        side_units = total_units - content_units  # 2 espacios invisibles
+
+        viewport_width = self.preview_table.viewport().width()
+        available = max(420, viewport_width - 2)
+
+        unit = max(1, int(available / total_units))
+        invisible_space = unit * side_units
+
+        content_available = max(1, available - invisible_space)
+
         used = 0
         for column, ratio in enumerate(ratios):
             if column == len(ratios) - 1:
-                width = max(1, available - used)
+                width = max(1, content_available - used)
             else:
-                width = max(1, int(available * ratio / 48))
+                width = max(1, int(content_available * ratio / content_units))
                 used += width
+
             self.preview_table.setColumnWidth(column, width)
 
     def generate_report(self) -> None:
