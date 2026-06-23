@@ -310,6 +310,7 @@ class ShipmentPowerBIService:
 
     @staticmethod
     def _category_order(category: str) -> int:
+        category = LEGACY_CATEGORY_MAP.get(category, category)
         visual_order = {
             LEGACY_CATEGORY_MAP.get(key, key): value
             for key, value in CATEGORY_ORDER.items()

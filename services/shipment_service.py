@@ -987,6 +987,7 @@ class ShipmentService:
         category: str,
         category_config: ShipmentCategoryState | None,
     ) -> int:
+        category = LEGACY_CATEGORY_MAP.get(category, category)
         if category_config is not None:
             configured = category_config.category_by_name(category)
             if configured is not None:
@@ -994,7 +995,11 @@ class ShipmentService:
         legacy_order = CATEGORY_ORDER.get(category)
         if legacy_order is not None:
             return legacy_order
-        visual_legacy = {value: CATEGORY_ORDER[key] for key, value in LEGACY_CATEGORY_MAP.items()}
+        visual_legacy = {
+            value: order
+            for key, value in LEGACY_CATEGORY_MAP.items()
+            if (order := CATEGORY_ORDER.get(key)) is not None
+        }
         return visual_legacy.get(category, 1_000_000)
 
     @staticmethod
@@ -1015,6 +1020,7 @@ class ShipmentService:
         category: str,
         category_config: ShipmentCategoryState | None,
     ) -> PatternFill | None:
+        category = LEGACY_CATEGORY_MAP.get(category, category)
         if category_config is not None:
             configured = category_config.category_by_name(category)
             if configured is not None:
