@@ -302,7 +302,6 @@ class ShipmentTab(QWidget):
                 f"Años: {', '.join(map(str, self.analysis.years))} | Productos: {len(self.analysis.products)} | "
                 f"Ignorados: {self.analysis.ignored_rows}"
             )
-            self.status_label.setText(status)
             self._append(status)
             for error in self.analysis.errors[:10]:
                 self._append(error)
@@ -428,6 +427,7 @@ class ShipmentTab(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.preview_table.setItem(row_index, column, item)
         self._resize_preview_columns()
+        self._update_filtered_status(rows)
         if len(rows) > len(shown):
             self._append(f"Vista previa limitada a {len(shown)} de {len(rows)} filas.")
 
@@ -439,11 +439,11 @@ class ShipmentTab(QWidget):
         if not hasattr(self, "preview_table"):
             return
 
-        ratios = (12, 2, 4, 4, 4, 8, 2, 2, 2)
-        total_units = sum(ratios)  # 40
+        ratios = (12, 2, 8, 5, 5, 8, 2, 2, 2)
+        total_units = sum(ratios)  # 46
 
         viewport_width = self.preview_table.viewport().width()
-        available = max(420, viewport_width - 2)
+        available = max(420, viewport_width - 16)
 
         used = 0
         for column, ratio in enumerate(ratios):
@@ -454,6 +454,25 @@ class ShipmentTab(QWidget):
                 used += width
 
             self.preview_table.setColumnWidth(column, width)
+
+    def _update_filtered_status(self, rows) -> None:
+        if self.analysis is None:
+            return
+        clients = {row.cliente for row in rows}
+        years = sorted({row.anio for row in rows})
+        products = {row.producto for row in rows}
+        ignored = self.analysis.ignored_rows if not self._has_active_filters() else 0
+        status = (
+            f"Filas leídas: {len(rows)} | Clientes: {len(clients)} | "
+            f"Años: {', '.join(map(str, years)) if years else '-'} | "
+            f"Productos: {len(products)} | Ignorados: {ignored}"
+        )
+        self.status_label.setText(status)
+
+    def _has_active_filters(self) -> bool:
+        if self.client_combo.currentData() is not None or self._advanced_clients_applied:
+            return True
+        return any(box.currentData() is not None for box in self.filter_boxes.values())
 
     def generate_report(self) -> None:
         if self.analysis is None:
@@ -529,6 +548,29 @@ class ShipmentTab(QWidget):
         self.client_combo.addItem("Todos", None)
         self.client_filter_button.setEnabled(False)
         self._update_client_filter_button()
+
+    def save_profile(self, destination: str | Path, ui_preferences: dict | None = None) -> Path:
+        return self.config_service.export_profile(
+            self.category_config,
+            destination,
+            ui_preferences=ui_preferences,
+        )
+
+    def load_profile(self, source: str | Path) -> dict:
+        state, ui_preferences = self.config_service.import_profile(source)
+        self.category_config = state
+        if self.analysis is not None:
+            changed = self.config_service.merge_products(
+                self.category_config,
+                self.analysis.records,
+                self._initial_product_sort_key,
+            )
+            if changed:
+                self.config_service.save(self.category_config)
+            self.refresh_preview()
+        else:
+            self.config_service.save(self.category_config)
+        return ui_preferences
 
     def open_category_dialog(self) -> None:
         if self.analysis is None:

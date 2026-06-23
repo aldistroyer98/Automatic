@@ -52,34 +52,39 @@ class ShipmentCategoryDialog(QDialog):
         self.line_filter = ""
         self.product_search = ""
         self.setWindowTitle("Configurar categorías")
-        self.resize(1040, 620)
+        self.resize(1220, 660)
         self._build_ui()
         self.refresh_tables()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Línea:"))
+        top_row = QHBoxLayout()
+
+        line_controls = QHBoxLayout()
+        line_controls.addWidget(QLabel("Línea:"), 2)
         self.line_combo = QComboBox(self)
         self.line_combo.addItem("Todos", "")
         for line in self.lines:
             self.line_combo.addItem(line, line)
         self.line_combo.currentIndexChanged.connect(self._line_filter_changed)
-        filter_row.addWidget(self.line_combo, 2)
-        filter_row.addStretch(1)
-        filter_row.addWidget(QLabel("Buscar:"))
+        line_controls.addWidget(self.line_combo, 6)
+        top_row.addLayout(line_controls, 8)
+        top_row.addSpacing(56)
+
+        product_controls = QHBoxLayout()
+        product_controls.addWidget(QLabel("Buscar:"), 2)
         self.search_field = QLineEdit(self)
         self.search_field.setClearButtonEnabled(True)
         self.search_field.textChanged.connect(self._product_search_changed)
-        filter_row.addWidget(self.search_field, 3)
-        filter_row.addStretch(1)
-        filter_row.addWidget(QLabel("Categoría:"))
+        product_controls.addWidget(self.search_field, 8)
+        product_controls.addWidget(QLabel("Categoría:"), 2)
         self.bulk_category_combo = QComboBox(self)
-        filter_row.addWidget(self.bulk_category_combo, 2)
+        product_controls.addWidget(self.bulk_category_combo, 6)
         move_button = QPushButton("Mover", self)
         move_button.clicked.connect(self.move_selected_products_to_category)
-        filter_row.addWidget(move_button)
-        root.addLayout(filter_row)
+        product_controls.addWidget(move_button, 2)
+        top_row.addLayout(product_controls, 20)
+        root.addLayout(top_row)
 
         content = QHBoxLayout()
 
@@ -93,24 +98,23 @@ class ShipmentCategoryDialog(QDialog):
         self.category_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.category_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.category_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.category_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.category_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.category_table.setColumnWidth(0, 58)
+        self.category_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.category_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.category_table.currentCellChanged.connect(lambda *_args: self.refresh_products())
         self.category_table.itemSelectionChanged.connect(lambda: self._mark_active("category"))
         left.addWidget(self.category_table, 1)
         category_actions = QHBoxLayout()
-        new_button = QPushButton("Nueva categoría")
+        new_button = QPushButton("Nuevo")
         new_button.clicked.connect(self.add_category)
-        color_button = QPushButton("Cambiar color")
-        color_button.clicked.connect(self.change_category_color)
-        delete_button = QPushButton("Eliminar categoría")
+        delete_button = QPushButton("Eliminar")
         delete_button.clicked.connect(self.delete_category)
-        category_actions.addWidget(new_button)
-        category_actions.addWidget(color_button)
-        category_actions.addWidget(delete_button)
+        color_button = QPushButton("Color")
+        color_button.clicked.connect(self.change_category_color)
+        category_actions.addWidget(new_button, 1)
+        category_actions.addWidget(delete_button, 1)
+        category_actions.addWidget(color_button, 1)
         left.addLayout(category_actions)
-        content.addLayout(left, 4)
+        content.addLayout(left, 8)
 
         move_box = QVBoxLayout()
         move_box.addStretch(1)
@@ -129,18 +133,23 @@ class ShipmentCategoryDialog(QDialog):
 
         right = QVBoxLayout()
         right.addWidget(QLabel("Productos de la categoría seleccionada"))
-        self.product_table = QTableWidget(0, 3)
-        self.product_table.setHorizontalHeaderLabels(("Orden", "Producto", "Categoría"))
+        self.product_table = QTableWidget(0, 4)
+        self.product_table.setHorizontalHeaderLabels(("Orden", "CodProd", "CodEqv", "Producto"))
         self.product_table.verticalHeader().setVisible(False)
         self.product_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.product_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.product_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.product_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.product_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.product_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
         self.product_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self.product_table.setColumnWidth(0, 58)
-        self.product_table.setColumnWidth(2, 190)
+        self.product_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.product_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.EditKeyPressed
+            | QAbstractItemView.SelectedClicked
+        )
+        self.product_table.itemChanged.connect(self._product_order_changed)
         self.product_table.itemSelectionChanged.connect(lambda: self._mark_active("product"))
         right.addWidget(self.product_table, 1)
         product_actions = QHBoxLayout()
@@ -152,9 +161,10 @@ class ShipmentCategoryDialog(QDialog):
         product_actions.addWidget(save_button)
         product_actions.addWidget(exit_button)
         right.addLayout(product_actions)
-        content.addLayout(right, 7)
+        content.addLayout(right, 20)
 
         root.addLayout(content, 1)
+        self._resize_tables()
 
     def refresh_tables(self, selected_category: str = "", selected_product_key: str = "") -> None:
         self._loading = True
@@ -176,6 +186,7 @@ class ShipmentCategoryDialog(QDialog):
                     self.category_table.setItem(row, column, item)
             if categories:
                 self.category_table.selectRow(min(selected_row, len(categories) - 1))
+            self._resize_tables()
         finally:
             self._loading = False
         self.refresh_products(selected_product_key)
@@ -188,26 +199,29 @@ class ShipmentCategoryDialog(QDialog):
         self._loading = True
         try:
             self.product_table.setRowCount(len(assignments))
-            names = self.category_config.category_names()
             selected_row = 0
             for row, assignment in enumerate(assignments):
                 if assignment.product_key == selected_product_key:
                     selected_row = row
                 order_item = QTableWidgetItem(str(assignment.product_order + 1))
+                order_item.setData(Qt.UserRole, assignment.product_key)
                 order_item.setTextAlignment(Qt.AlignCenter)
+                code_item = QTableWidgetItem(assignment.cod_prod)
+                code_item.setTextAlignment(Qt.AlignCenter)
+                code_item.setFlags(code_item.flags() & ~Qt.ItemIsEditable)
+                equivalent_item = QTableWidgetItem(assignment.cod_eqv)
+                equivalent_item.setTextAlignment(Qt.AlignCenter)
+                equivalent_item.setFlags(equivalent_item.flags() & ~Qt.ItemIsEditable)
                 product_item = QTableWidgetItem(assignment.producto)
                 product_item.setToolTip(assignment.producto)
+                product_item.setFlags(product_item.flags() & ~Qt.ItemIsEditable)
                 self.product_table.setItem(row, 0, order_item)
-                self.product_table.setItem(row, 1, product_item)
-                combo = QComboBox()
-                combo.addItems(names)
-                combo.setCurrentText(assignment.category_name)
-                combo.currentTextChanged.connect(
-                    lambda value, key=assignment.product_key: self.assign_product_category(key, value)
-                )
-                self.product_table.setCellWidget(row, 2, combo)
+                self.product_table.setItem(row, 1, code_item)
+                self.product_table.setItem(row, 2, equivalent_item)
+                self.product_table.setItem(row, 3, product_item)
             if assignments:
                 self.product_table.selectRow(min(selected_row, len(assignments) - 1))
+            self._resize_tables()
         finally:
             self._loading = False
 
@@ -325,19 +339,49 @@ class ShipmentCategoryDialog(QDialog):
             next_order += 1
             changed = True
         if changed:
+            self._normalize_product_order(current_category)
+            self._normalize_product_order(target_category)
             self._persist_and_refresh(current_category)
 
     def move_product_to(self, action: str) -> None:
         assignment = self._selected_assignment()
         if assignment is None:
             return
-        group = self._assignments_for_category(assignment.category_name)
+        group = self._assignments_for_category(assignment.category_name, include_search=False)
         index = group.index(assignment)
         target = self._target_index(index, len(group), action)
         if target == index:
             return
         item = group.pop(index)
         group.insert(target, item)
+        for order, current in enumerate(group):
+            current.product_order = order
+        self._persist_and_refresh(assignment.category_name, assignment.product_key)
+
+    def _product_order_changed(self, item: QTableWidgetItem) -> None:
+        if self._loading or item.column() != 0:
+            return
+        key = str(item.data(Qt.UserRole) or "")
+        assignment = self.category_config.assignments.get(key)
+        if assignment is None:
+            return
+        try:
+            requested_order = int(item.text())
+        except ValueError:
+            self.refresh_products(assignment.product_key)
+            return
+        group = self._assignments_for_category(assignment.category_name, include_search=False)
+        if not group:
+            return
+        target_index = max(0, min(len(group) - 1, requested_order - 1))
+        current_index = group.index(assignment)
+        if current_index == target_index:
+            if assignment.product_order != target_index:
+                self._normalize_product_order(assignment.category_name)
+                self._persist_and_refresh(assignment.category_name, assignment.product_key)
+            return
+        group.pop(current_index)
+        group.insert(target_index, assignment)
         for order, current in enumerate(group):
             current.product_order = order
         self._persist_and_refresh(assignment.category_name, assignment.product_key)
@@ -359,6 +403,12 @@ class ShipmentCategoryDialog(QDialog):
         index = self.bulk_category_combo.findData(current)
         self.bulk_category_combo.setCurrentIndex(index if index >= 0 else 0)
         self.bulk_category_combo.blockSignals(False)
+
+    def _normalize_product_order(self, category_name: str) -> None:
+        for order, assignment in enumerate(
+            self._assignments_for_category(category_name, include_search=False)
+        ):
+            assignment.product_order = order
 
     def _visible_categories(self) -> list[ShipmentCategoryConfig]:
         active_names = {
@@ -431,11 +481,16 @@ class ShipmentCategoryDialog(QDialog):
             )
         ]
 
-    def _assignments_for_category(self, category_name: str) -> list[ProductCategoryAssignment]:
+    def _assignments_for_category(
+        self,
+        category_name: str,
+        *,
+        include_search: bool = True,
+    ) -> list[ProductCategoryAssignment]:
         return sorted(
             (
                 assignment
-                for assignment in self._active_assignments()
+                for assignment in self._active_assignments(include_search=include_search)
                 if assignment.category_name == category_name
             ),
             key=lambda item: (item.product_order, item.producto.casefold()),
@@ -470,3 +525,26 @@ class ShipmentCategoryDialog(QDialog):
     def _product_search_changed(self, text: str) -> None:
         self.product_search = text
         self.refresh_products()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_tables()
+
+    def _resize_tables(self) -> None:
+        if not hasattr(self, "category_table") or not hasattr(self, "product_table"):
+            return
+        self._resize_columns(self.category_table, (1, 4, 2), padding=8)
+        self._resize_columns(self.product_table, (1, 5, 5, 8), padding=12)
+
+    @staticmethod
+    def _resize_columns(table: QTableWidget, ratios: tuple[int, ...], padding: int) -> None:
+        available = max(1, table.viewport().width() - padding)
+        total = sum(ratios)
+        used = 0
+        for column, ratio in enumerate(ratios):
+            if column == len(ratios) - 1:
+                width = max(1, available - used)
+            else:
+                width = max(1, int(available * ratio / total))
+                used += width
+            table.setColumnWidth(column, width)

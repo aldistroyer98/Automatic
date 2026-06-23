@@ -73,32 +73,58 @@ class ShipmentConfigService:
         self._ensure_defaults(state)
         self._normalize_assignments(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "categories": [
-                {
-                    "name": category.name,
-                    "color_hex": category.normalized_color(),
-                    "order": index,
-                }
-                for index, category in enumerate(state.sorted_categories())
-            ],
-            "assignments": [
-                {
-                    "product_key": assignment.product_key,
-                    "cod_prod": assignment.cod_prod,
-                    "cod_eqv": assignment.cod_eqv,
-                    "producto": assignment.producto,
-                    "category_name": assignment.category_name,
-                    "product_order": assignment.product_order,
-                    "linea": assignment.linea,
-                }
-                for assignment in sorted(
-                    state.assignments.values(),
-                    key=lambda item: (item.category_name.casefold(), item.product_order, item.producto.casefold()),
-                )
-            ],
-        }
+        data = self._state_payload(state)
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def export_profile(
+        self,
+        state: ShipmentCategoryState,
+        destination: str | Path,
+        ui_preferences: dict | None = None,
+    ) -> Path:
+        self._ensure_defaults(state)
+        self._normalize_assignments(state)
+        payload = self._state_payload(state)
+        assignments = payload["assignments"]
+        profile = {
+            "version": 1,
+            "categories": payload["categories"],
+            "assignments": assignments,
+            "product_category_map": {
+                item["product_key"]: item["category_name"]
+                for item in assignments
+            },
+            "product_order_map": {
+                item["product_key"]: item["product_order"]
+                for item in assignments
+            },
+            "ui_preferences": ui_preferences or {},
+        }
+        output = Path(destination)
+        if output.suffix.lower() != ".json":
+            output = output.with_suffix(".json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+        return output
+
+    def import_profile(self, source: str | Path) -> tuple[ShipmentCategoryState, dict]:
+        path = Path(source)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("El perfil no es un JSON válido.") from exc
+        if not isinstance(data, dict):
+            raise ValueError("El perfil no tiene una estructura válida.")
+        if int(data.get("version", 1)) > 1:
+            raise ValueError("La versión del perfil no es compatible.")
+
+        categories = self._profile_categories(data)
+        assignments = self._profile_assignments(data)
+        state = ShipmentCategoryState(categories=categories, assignments=assignments)
+        self._ensure_defaults(state)
+        self._normalize_assignments(state)
+        ui_preferences = data.get("ui_preferences", {})
+        return state, ui_preferences if isinstance(ui_preferences, dict) else {}
 
     def merge_products(
         self,
@@ -140,6 +166,81 @@ class ShipmentConfigService:
             )
             changed = True
         return changed
+
+    def _state_payload(self, state: ShipmentCategoryState) -> dict:
+        return {
+            "categories": [
+                {
+                    "name": category.name,
+                    "color_hex": category.normalized_color(),
+                    "order": index,
+                }
+                for index, category in enumerate(state.sorted_categories())
+            ],
+            "assignments": [
+                {
+                    "product_key": assignment.product_key,
+                    "cod_prod": assignment.cod_prod,
+                    "cod_eqv": assignment.cod_eqv,
+                    "producto": assignment.producto,
+                    "category_name": assignment.category_name,
+                    "product_order": assignment.product_order,
+                    "linea": assignment.linea,
+                }
+                for assignment in sorted(
+                    state.assignments.values(),
+                    key=lambda item: (item.category_name.casefold(), item.product_order, item.producto.casefold()),
+                )
+            ],
+        }
+
+    def _profile_categories(self, data: dict) -> list[ShipmentCategoryConfig]:
+        raw_categories = data.get("categories")
+        if not isinstance(raw_categories, list):
+            raise ValueError("El perfil no contiene categorías válidas.")
+        categories = [
+            ShipmentCategoryConfig(
+                LEGACY_CATEGORY_MAP.get(str(item.get("name", "")).strip(), str(item.get("name", "")).strip()),
+                str(item.get("color_hex", "E7E6E6")).strip(),
+                int(item.get("order", index)),
+            )
+            for index, item in enumerate(raw_categories)
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        ]
+        if not categories:
+            raise ValueError("El perfil no contiene categorías válidas.")
+        return categories
+
+    def _profile_assignments(self, data: dict) -> dict[str, ProductCategoryAssignment]:
+        raw_assignments = data.get("assignments", [])
+        category_map = data.get("product_category_map", {})
+        order_map = data.get("product_order_map", {})
+        if not isinstance(raw_assignments, list):
+            raw_assignments = []
+        if not isinstance(category_map, dict):
+            category_map = {}
+        if not isinstance(order_map, dict):
+            order_map = {}
+
+        assignments: dict[str, ProductCategoryAssignment] = {}
+        for index, item in enumerate(raw_assignments):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("product_key", "")).strip()
+            if not key:
+                key = product_key(item.get("cod_prod", ""), item.get("cod_eqv", ""), item.get("producto", ""))
+            category = str(category_map.get(key, item.get("category_name", CATEGORY_WITHOUT_CATEGORY))).strip()
+            order_value = order_map.get(key, item.get("product_order", index))
+            assignments[key] = ProductCategoryAssignment(
+                product_key=key,
+                cod_prod=str(item.get("cod_prod", "")).strip(),
+                cod_eqv=str(item.get("cod_eqv", "")).strip(),
+                producto=str(item.get("producto", "")).strip(),
+                category_name=LEGACY_CATEGORY_MAP.get(category, category),
+                product_order=int(order_value),
+                linea=str(item.get("linea", "")).strip(),
+            )
+        return assignments
 
     def _ensure_defaults(self, state: ShipmentCategoryState) -> None:
         existing = {category.name.casefold() for category in state.categories}

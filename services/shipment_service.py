@@ -730,8 +730,15 @@ class ShipmentService:
                     worksheet.cell(row, column, header)
                 self._style_header(worksheet, row, 18)
                 row += 1
-                first_month, last_month = self._block_period(block, year, options)
                 for code, equivalent, product, category in products:
+                    product_records = [
+                        record for record in block
+                        if record.cod_prod == code
+                        and record.cod_eqv == equivalent
+                        and record.producto == product
+                    ]
+                    first_month, last_month = self._active_month_period(product_records, year, options)
+                    active_months = last_month - first_month + 1 if first_month and last_month else 0
                     worksheet.cell(row, 1, code).number_format = "@"
                     worksheet.cell(row, 2, equivalent).number_format = "@"
                     worksheet.cell(row, 3, product)
@@ -755,10 +762,7 @@ class ShipmentService:
                             cell.value = f"=SUMIFS('Data_Normalizada'!$G:$G,{pairs})"
                             cell.number_format = "0"
                     worksheet.cell(row, 16, f"=SUM(D{row}:O{row})")
-                    worksheet.cell(
-                        row, 17,
-                        self._block_months_formula(year, line, client, options),
-                    )
+                    worksheet.cell(row, 17, active_months)
                     worksheet.cell(row, 18, f'=IF(Q{row}=0,0,P{row}/Q{row})')
                     worksheet.cell(row, 18).number_format = "0.0"
                     fill = self._category_fill(category, category_config)

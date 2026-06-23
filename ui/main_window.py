@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QTabWidget,
     QVBoxLayout,
@@ -103,11 +105,14 @@ class MainWindow(QMainWindow):
 
         self.header_actions = QFrame(self.header)
         self.header_actions.setObjectName("HeaderActionsBox")
-        actions_layout = QHBoxLayout(self.header_actions)
+        actions_layout = QVBoxLayout(self.header_actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
 
-        status = QLabel("Listo", self.header_actions)
-        status.setObjectName("StatusBadge")
-        actions_layout.addWidget(status)
+        status_row = QHBoxLayout()
+
+        self.status_badge = QLabel("Listo", self.header_actions)
+        self.status_badge.setObjectName("StatusBadge")
+        status_row.addWidget(self.status_badge)
 
         self.scale_selector = QComboBox(self.header_actions)
         self.scale_selector.setObjectName("ScaleSelector")
@@ -115,12 +120,22 @@ class MainWindow(QMainWindow):
             self.scale_selector.addItem(UiScale(scale).label, scale)
         self.scale_selector.setCurrentText(self.ui_scale.label)
         self.scale_selector.currentTextChanged.connect(self._change_ui_scale)
-        actions_layout.addWidget(self.scale_selector)
+        status_row.addWidget(self.scale_selector)
 
         self.theme_button = QPushButton(self.header_actions)
         self.theme_button.setObjectName("ThemeToggle")
         self.theme_button.clicked.connect(self._toggle_theme)
-        actions_layout.addWidget(self.theme_button)
+        status_row.addWidget(self.theme_button)
+        actions_layout.addLayout(status_row)
+
+        profile_row = QHBoxLayout()
+        self.load_profile_button = QPushButton("Cargar Perfil", self.header_actions)
+        self.load_profile_button.clicked.connect(self.load_profile)
+        self.save_profile_button = QPushButton("Guardar Perfil", self.header_actions)
+        self.save_profile_button.clicked.connect(self.save_profile)
+        profile_row.addWidget(self.load_profile_button, 1)
+        profile_row.addWidget(self.save_profile_button, 1)
+        actions_layout.addLayout(profile_row)
 
         self.header_layout.addWidget(self.header_actions)
         self._update_theme_button()
@@ -152,9 +167,11 @@ class MainWindow(QMainWindow):
         self.header_layout.setSpacing(s(14))
         self.theme_button.setFixedSize(s(38), s(34))
         self.scale_selector.setFixedWidth(s(88))
-        side_width = s(260, minimum=210)
-        self.header_left.setFixedWidth(side_width)
-        self.header_actions.setFixedWidth(side_width)
+        self.status_badge.setMinimumWidth(s(82, minimum=72))
+        self.load_profile_button.setMinimumHeight(s(30))
+        self.save_profile_button.setMinimumHeight(s(30))
+        self.header_left.setFixedWidth(s(310, minimum=250))
+        self.header_actions.setFixedWidth(s(310, minimum=270))
         self._update_logo()
         self._update_tab_icon()
         self.setStyleSheet(stylesheet(self.theme_mode, self.ui_scale))
@@ -168,16 +185,21 @@ class MainWindow(QMainWindow):
             self.logo_label.setText("SISA")
             self.logo_label.show()
             return
-        height = self.ui_scale.px(54, minimum=36)
-        pixmap = self._logo_pixmap.scaledToHeight(height, Qt.SmoothTransformation)
+        height = self.ui_scale.px(66, minimum=44)
+        width = max(self.ui_scale.px(230, minimum=190), self.header_left.width() - self.ui_scale.px(28))
+        pixmap = self._logo_pixmap.scaled(
+            QSize(width, height),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
         self.logo_label.setPixmap(pixmap)
         self.logo_label.show()
 
     def _style_logo_label(self) -> None:
         s = self.ui_scale.px
-        self.logo_label.setMinimumSize(s(120), s(62))
+        self.logo_label.setMinimumSize(s(220), s(72))
         self.logo_label.setStyleSheet(
-            f"QLabel#HeaderLogo {{ background: #ffffff; border-radius: {s(8)}px; padding: {s(4)}px {s(8)}px; }}"
+            f"QLabel#HeaderLogo {{ background: transparent; border: none; padding: {s(2)}px {s(4)}px; }}"
         )
 
     def _center_window(self) -> None:
@@ -205,3 +227,59 @@ class MainWindow(QMainWindow):
     def _update_tab_icon(self) -> None:
         color = "#ffffff" if self.theme_mode == ThemeMode.DARK else palette(self.theme_mode)["accent"]
         self.tabs.setTabIcon(0, app_icon("SP_DriveFDIcon", self, color=color))
+
+    def save_profile(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar perfil",
+            str(self.paths.data_root / "perfil_envio.json"),
+            "Archivos JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            output = self.shipment_tab.save_profile(path, self._ui_preferences())
+            QMessageBox.information(self, "Perfil", f"Perfil guardado correctamente:\n{output}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error al guardar perfil", str(exc))
+
+    def load_profile(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Cargar perfil",
+            str(self.paths.data_root),
+            "Archivos JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            preferences = self.shipment_tab.load_profile(path)
+            self._apply_profile_preferences(preferences)
+            QMessageBox.information(self, "Perfil", "Perfil cargado correctamente.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Perfil no válido", str(exc))
+
+    def _ui_preferences(self) -> dict:
+        return {
+            "theme": self.theme_mode.value,
+            "scale": self.ui_scale.factor,
+        }
+
+    def _apply_profile_preferences(self, preferences: dict) -> None:
+        theme = preferences.get("theme")
+        scale = preferences.get("scale")
+        changed = False
+        if theme in {ThemeMode.LIGHT.value, ThemeMode.DARK.value}:
+            self.theme_mode = ThemeMode(theme)
+            changed = True
+        if isinstance(scale, (int, float)) and scale in AVAILABLE_SCALES:
+            self.ui_scale = UiScale(float(scale))
+            index = self.scale_selector.findData(float(scale))
+            if index >= 0:
+                self.scale_selector.blockSignals(True)
+                self.scale_selector.setCurrentIndex(index)
+                self.scale_selector.blockSignals(False)
+            changed = True
+        if changed:
+            self._update_theme_button()
+            self._apply_ui_scale()
