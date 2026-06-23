@@ -6,6 +6,7 @@ from typing import Callable, Iterable
 
 from models.shipment import ShipmentRecord
 from models.shipment_config import (
+    CATEGORY_WITHOUT_CATEGORY,
     DEFAULT_CATEGORY_COLORS,
     LEGACY_CATEGORY_MAP,
     ProductCategoryAssignment,
@@ -59,11 +60,14 @@ class ShipmentConfigService:
                 )
             state = ShipmentCategoryState(categories=categories, assignments=assignments)
             self._ensure_defaults(state)
+            self._normalize_assignments(state)
             return state
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return self.default_state()
 
     def save(self, state: ShipmentCategoryState) -> None:
+        self._ensure_defaults(state)
+        self._normalize_assignments(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "categories": [
@@ -114,7 +118,7 @@ class ShipmentConfigService:
                 continue
             category = LEGACY_CATEGORY_MAP.get(record.categoria, record.categoria)
             if state.category_by_name(category) is None:
-                category = next(iter(DEFAULT_CATEGORY_COLORS))
+                category = CATEGORY_WITHOUT_CATEGORY
             order = next_order_by_category.get(category, 0)
             next_order_by_category[category] = order + 1
             state.assignments[key] = ProductCategoryAssignment(
@@ -137,6 +141,12 @@ class ShipmentConfigService:
                 next_order += 1
         for index, category in enumerate(state.sorted_categories()):
             category.order = index
+
+    def _normalize_assignments(self, state: ShipmentCategoryState) -> None:
+        valid = {category.name.casefold(): category.name for category in state.categories}
+        for assignment in state.assignments.values():
+            category = valid.get(str(assignment.category_name or "").casefold())
+            assignment.category_name = category or CATEGORY_WITHOUT_CATEGORY
 
     @staticmethod
     def _next_order_by_category(state: ShipmentCategoryState) -> dict[str, int]:

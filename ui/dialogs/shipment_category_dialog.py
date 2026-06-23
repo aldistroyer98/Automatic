@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from models.shipment_config import (
+    CATEGORY_WITHOUT_CATEGORY,
     DEFAULT_CATEGORY_COLORS,
     ProductCategoryAssignment,
     ShipmentCategoryConfig,
@@ -58,6 +59,7 @@ class ShipmentCategoryDialog(QDialog):
         self.category_table = QTableWidget(0, 3)
         self.category_table.setHorizontalHeaderLabels(("Orden", "Categoría", "Color"))
         self.category_table.verticalHeader().setVisible(False)
+        self.category_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.category_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.category_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.category_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -73,8 +75,11 @@ class ShipmentCategoryDialog(QDialog):
         new_button.clicked.connect(self.add_category)
         color_button = QPushButton("Cambiar color")
         color_button.clicked.connect(self.change_category_color)
+        delete_button = QPushButton("Eliminar categoría")
+        delete_button.clicked.connect(self.delete_category)
         category_actions.addWidget(new_button)
         category_actions.addWidget(color_button)
+        category_actions.addWidget(delete_button)
         left.addLayout(category_actions)
         content.addLayout(left, 4)
 
@@ -98,6 +103,7 @@ class ShipmentCategoryDialog(QDialog):
         self.product_table = QTableWidget(0, 3)
         self.product_table.setHorizontalHeaderLabels(("Orden", "Producto", "Categoría"))
         self.product_table.verticalHeader().setVisible(False)
+        self.product_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.product_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.product_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
@@ -197,6 +203,36 @@ class ShipmentCategoryDialog(QDialog):
         category.color_hex = color.name().lstrip("#").upper()
         self._persist_and_refresh(category.name)
 
+    def delete_category(self) -> None:
+        category = self._selected_category()
+        if category is None:
+            return
+        if category.name == CATEGORY_WITHOUT_CATEGORY:
+            QMessageBox.information(self, "Categorías", "No se puede eliminar Sin Categoría.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Eliminar categoría",
+            f'¿Deseas eliminar esta categoría? Los productos asociados se moverán a "{CATEGORY_WITHOUT_CATEGORY}".',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.category_config.categories = [
+            item for item in self.category_config.categories
+            if item.name != category.name
+        ]
+        next_order = self._next_product_order(CATEGORY_WITHOUT_CATEGORY)
+        for assignment in self.category_config.assignments.values():
+            if assignment.category_name == category.name:
+                assignment.category_name = CATEGORY_WITHOUT_CATEGORY
+                assignment.product_order = next_order
+                next_order += 1
+        for order, item in enumerate(self.category_config.sorted_categories()):
+            item.order = order
+        self._persist_and_refresh(CATEGORY_WITHOUT_CATEGORY)
+
     def move_category_to(self, action: str) -> None:
         selected = self._selected_category()
         if selected is None:
@@ -268,7 +304,7 @@ class ShipmentCategoryDialog(QDialog):
         result = []
         for category in self.category_config.sorted_categories():
             is_custom = category.name not in DEFAULT_CATEGORY_COLORS
-            if category.name in active_names or is_custom:
+            if category.name in active_names or is_custom or category.name == CATEGORY_WITHOUT_CATEGORY:
                 result.append(category)
         return result
 

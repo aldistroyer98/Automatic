@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QHeaderView,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -49,22 +50,22 @@ class ShipmentTab(QWidget):
         file_row = QHBoxLayout()
         self.path_field = QLineEdit()
         self.path_field.setReadOnly(True)
-        load_button = QPushButton("Cargar Base de Envíos")
+        load_button = QPushButton("Cargar DataBase")
         load_button.clicked.connect(self.select_source)
         self.analyze_button = QPushButton("Analizar")
         self.analyze_button.clicked.connect(self.analyze_source)
-        self.generate_button = QPushButton("Generar Cuadro de Envíos")
+        self.generate_button = QPushButton("Exportar Excel")
         self.generate_button.clicked.connect(self.generate_report)
         self.powerbi_button = QPushButton("Exportar Power BI")
         self.powerbi_button.clicked.connect(self.export_powerbi)
-        self.category_button = QPushButton("Configurar categorías")
+        self.category_button = QPushButton("Categorías")
         self.category_button.clicked.connect(self.open_category_dialog)
         file_row.addWidget(load_button)
         file_row.addWidget(self.path_field, 1)
         file_row.addWidget(self.analyze_button)
+        file_row.addWidget(self.category_button)
         file_row.addWidget(self.generate_button)
         file_row.addWidget(self.powerbi_button)
-        file_row.addWidget(self.category_button)
         layout.addLayout(file_row)
 
         filters = QGridLayout()
@@ -82,6 +83,8 @@ class ShipmentTab(QWidget):
             self.filter_boxes[key] = box
             filters.addWidget(QLabel(label), 0, index)
             filters.addWidget(box, 1, index)
+        for index, stretch in enumerate((4, 2, 2, 2)):
+            filters.setColumnStretch(index, stretch)
         layout.addLayout(filters)
 
         self.preview_table = QTableWidget(0, 9)
@@ -89,15 +92,9 @@ class ShipmentTab(QWidget):
             ("Cliente", "Año", "Línea", "CodProd", "CodEqv", "Producto", "Total", "Meses", "Media")
         )
         self.preview_table.verticalHeader().setVisible(False)
-        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.preview_table.setAlternatingRowColors(True)
-        self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.preview_table = QTableWidget(0, 9)
-        self.preview_table.setHorizontalHeaderLabels(
-            ("Cliente", "Año", "Línea", "CodProd", "CodEqv", "Producto", "Total", "Meses", "Media")
-        )
-        self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.preview_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -206,8 +203,10 @@ class ShipmentTab(QWidget):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if column in (1, 6, 7, 8):
+                if column in (1, 2, 3, 4, 6, 7, 8):
                     item.setTextAlignment(Qt.AlignCenter)
+                else:
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.preview_table.setItem(row_index, column, item)
         self._resize_preview_columns()
         if len(rows) > len(shown):
@@ -222,25 +221,21 @@ class ShipmentTab(QWidget):
             return
 
         ratios = (12, 2, 4, 4, 4, 8, 2, 2, 2)
-
+        visible_units = 40
         total_units = 42
-        content_units = sum(ratios)  # 40
-        side_units = total_units - content_units  # 2 espacios invisibles
-
         viewport_width = self.preview_table.viewport().width()
-        available = max(420, viewport_width - 2)
-
-        unit = max(1, int(available / total_units))
-        invisible_space = unit * side_units
-
-        content_available = max(1, available - invisible_space)
+        scrollbar = self.preview_table.verticalScrollBar()
+        scrollbar_width = scrollbar.sizeHint().width() if scrollbar.isVisible() else 0
+        total_width = max(1, viewport_width - scrollbar_width)
+        margin_unit = max(4, int(total_width / total_units))
+        available = max(1, total_width - (margin_unit * 2))
 
         used = 0
         for column, ratio in enumerate(ratios):
             if column == len(ratios) - 1:
-                width = max(1, content_available - used)
+                width = max(1, available - used)
             else:
-                width = max(1, int(content_available * ratio / content_units))
+                width = max(1, int(available * ratio / visible_units))
                 used += width
 
             self.preview_table.setColumnWidth(column, width)

@@ -27,6 +27,7 @@ from models.shipment import (
 )
 from models.shipment_config import (
     CATEGORY_CONSUMABLE,
+    CATEGORY_WITHOUT_CATEGORY,
     LEGACY_CATEGORY_MAP,
     ShipmentCategoryState,
     product_key,
@@ -882,7 +883,9 @@ class ShipmentService:
         if category_config is not None:
             assignment = category_config.assignments.get(product_key(cod_prod, cod_eqv, producto))
             if assignment and assignment.category_name:
-                return assignment.category_name
+                if category_config.category_by_name(assignment.category_name) is not None:
+                    return assignment.category_name
+                return CATEGORY_WITHOUT_CATEGORY
         return LEGACY_CATEGORY_MAP.get(fallback, fallback)
 
     @staticmethod

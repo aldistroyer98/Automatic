@@ -73,35 +73,42 @@ class MainWindow(QMainWindow):
 
         self.header_layout = QHBoxLayout(self.header)
 
-        self.logo_label = QLabel(self.header)
+        self.header_left = QWidget(self.header)
+        self.header_left_layout = QHBoxLayout(self.header_left)
+        self.header_left_layout.setContentsMargins(0, 0, 0, 0)
+        self.logo_label = QLabel(self.header_left)
         self.logo_label.setObjectName("HeaderLogo")
         self.logo_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.logo_label.setScaledContents(False)
-        self.header_layout.addWidget(self.logo_label)
+        self.header_left_layout.addWidget(self.logo_label)
+        self.header_left_layout.addStretch(1)
+        self.header_layout.addWidget(self.header_left)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
         title = QLabel("Automatic", self.header)
         title.setObjectName("HeaderTitle")
+        title.setAlignment(Qt.AlignCenter)
         subtitle = QLabel(
             "Módulo independiente de análisis y generación de cuadros de envío",
             self.header,
         )
         subtitle.setObjectName("HeaderSubtitle")
+        subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setWordWrap(True)
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         self.header_layout.addLayout(title_box, 1)
 
-        actions = QFrame(self.header)
-        actions.setObjectName("HeaderActionsBox")
-        actions_layout = QHBoxLayout(actions)
+        self.header_actions = QFrame(self.header)
+        self.header_actions.setObjectName("HeaderActionsBox")
+        actions_layout = QHBoxLayout(self.header_actions)
 
-        status = QLabel("Listo", actions)
+        status = QLabel("Listo", self.header_actions)
         status.setObjectName("StatusBadge")
         actions_layout.addWidget(status)
 
-        self.scale_selector = QComboBox(actions)
+        self.scale_selector = QComboBox(self.header_actions)
         self.scale_selector.setObjectName("ScaleSelector")
         for scale in AVAILABLE_SCALES:
             self.scale_selector.addItem(UiScale(scale).label, scale)
@@ -109,12 +116,12 @@ class MainWindow(QMainWindow):
         self.scale_selector.currentTextChanged.connect(self._change_ui_scale)
         actions_layout.addWidget(self.scale_selector)
 
-        self.theme_button = QPushButton(actions)
+        self.theme_button = QPushButton(self.header_actions)
         self.theme_button.setObjectName("ThemeToggle")
         self.theme_button.clicked.connect(self._toggle_theme)
         actions_layout.addWidget(self.theme_button)
 
-        self.header_layout.addWidget(actions)
+        self.header_layout.addWidget(self.header_actions)
         self._update_theme_button()
         return self.header
 
@@ -144,6 +151,9 @@ class MainWindow(QMainWindow):
         self.header_layout.setSpacing(s(14))
         self.theme_button.setFixedSize(s(38), s(34))
         self.scale_selector.setFixedWidth(s(88))
+        side_width = s(260, minimum=210)
+        self.header_left.setFixedWidth(side_width)
+        self.header_actions.setFixedWidth(side_width)
         self._update_logo()
         self._update_tab_icon()
         self.setStyleSheet(stylesheet(self.theme_mode, self.ui_scale))
