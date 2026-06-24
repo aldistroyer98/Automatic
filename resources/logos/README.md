@@ -1,3 +1,4 @@
-Coloca aqui el archivo `sistemas_analiticos.png`.
+La interfaz usa `SISA1.png` como logo del encabezado.
 
-La interfaz usa este recurso en el header y como icono de ventana cuando existe.
+Los iconos de la aplicación están en `resources/icons/Automatic.png` y
+`resources/icons/Automatic.ico`.

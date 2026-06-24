@@ -13,12 +13,12 @@ def configure_logging(level: int = logging.INFO) -> logging.Logger:
     """Configure process-wide logging once and return the application logger."""
 
     root = logging.getLogger()
-    if getattr(root, "_interautomy_configured", False):
-        return logging.getLogger("interautomy")
+    if getattr(root, "_automatic_configured", False):
+        return logging.getLogger("automatic")
 
     paths = get_app_paths()
     handler = RotatingFileHandler(
-        paths.logs_dir / "interautomy.log",
+        paths.logs_dir / "automatic.log",
         maxBytes=2_000_000,
         backupCount=5,
         encoding="utf-8",
@@ -27,5 +27,5 @@ def configure_logging(level: int = logging.INFO) -> logging.Logger:
 
     root.setLevel(level)
     root.addHandler(handler)
-    root._interautomy_configured = True  # type: ignore[attr-defined]
-    return logging.getLogger("interautomy")
+    root._automatic_configured = True  # type: ignore[attr-defined]
+    return logging.getLogger("automatic")

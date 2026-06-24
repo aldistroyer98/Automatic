@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from openpyxl import load_workbook
 
+from app.paths import _migrate_legacy_data
 from services.category_manager import CategoryManager
 from services.equivalence_service import EquivalenceService
 from services.excel_reader import sanitize_tabular_rows
@@ -23,6 +24,19 @@ def test_sanitize_tabular_rows_removes_exported_index_and_empty_data() -> None:
 def test_category_display_mapping_preserves_internal_value() -> None:
     assert CategoryManager.visible_name("Reactivo Principal") == "Producto Principal"
     assert CategoryManager.internal_name("Producto Principal") == "Reactivo Principal"
+
+
+def test_legacy_data_migration_copies_without_deleting_source(tmp_path) -> None:
+    source = tmp_path / "legacy"
+    destination = tmp_path / "Automatic"
+    source.mkdir()
+    (source / "equivalence_config.json").write_text('{"version": 1}', encoding="utf-8")
+
+    selected = _migrate_legacy_data(source, destination)
+
+    assert selected == destination
+    assert (destination / "equivalence_config.json").exists()
+    assert (source / "equivalence_config.json").exists()
 
 
 def test_product_import_ignores_unnamed_index_column(tmp_path) -> None:

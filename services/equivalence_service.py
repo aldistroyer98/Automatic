@@ -4,7 +4,6 @@ import csv
 import json
 import math
 import re
-import shutil
 import unicodedata
 from pathlib import Path
 from typing import Iterable
@@ -21,7 +20,6 @@ from services.excel_reader import sanitize_tabular_rows
 HEADER_FILL = PatternFill("solid", fgColor="D9EAF7")
 TITLE_FILL = PatternFill("solid", fgColor="1F4E78")
 WARNING_FILL = PatternFill("solid", fgColor="FCE4D6")
-ERROR_FILL = PatternFill("solid", fgColor="F4CCCC")
 THIN_BORDER = Border(
     left=Side(style="thin", color="B7B7B7"),
     right=Side(style="thin", color="B7B7B7"),
@@ -90,149 +88,6 @@ class EquivalenceService:
             "settings": state.settings,
         }
         self.config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def parse_clipboard_text(self, text: str) -> list[TenderTest]:
-        rows: list[TenderTest] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            parsed = self._parse_tender_line(line)
-            if parsed is not None:
-                rows.append(parsed)
-        return rows
-
-    def parse_import_text(self, text: str) -> list[ImportPreviewRow]:
-        rows: list[ImportPreviewRow] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or self._looks_like_header([line]):
-                continue
-            parsed = self._parse_import_line(line)
-            if parsed is not None:
-                rows.append(parsed)
-        return rows
-
-    def extract_import_preview(self, path: str | Path) -> tuple[list[ImportPreviewRow], str]:
-        source = Path(path)
-        suffix = source.suffix.lower()
-        if suffix == ".pdf":
-            text = self._extract_pdf_text(source)
-            rows = self.parse_import_text(text)
-            if self._has_useful_preview(rows):
-                return rows, text
-            text = self._ocr_pdf(source)
-            return self.parse_import_text(text), text
-        if suffix in {".png", ".jpg", ".jpeg", ".bmp"}:
-            text = self._ocr_image_file(source)
-            return self.parse_import_text(text), text
-        raise ValueError("Formato no soportado. Usa PNG, JPG, JPEG o PDF.")
-
-    def export_import_review(self, path: str | Path, rows: Iterable[ImportPreviewRow]) -> Path:
-        output = Path(path)
-        if output.suffix.lower() == ".csv":
-            output.parent.mkdir(parents=True, exist_ok=True)
-            with output.open("w", encoding="utf-8-sig", newline="") as file:
-                writer = csv.writer(file)
-                writer.writerow(["Código SAP", "Descripción", "Cantidad", "Estado", "Observación"])
-                for row in rows:
-                    writer.writerow([row.sap_code, row.description, row.quantity, row.status, row.observation])
-            return output
-
-        if output.suffix.lower() != ".xlsx":
-            output = output.with_suffix(".xlsx")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Revision"
-        headers = ("Código SAP", "Descripción", "Cantidad", "Estado", "Observación")
-        self._write_headers(sheet, 1, headers)
-        critical = {"Fila incompleta", "Revisar código", "Revisar cantidad"}
-        for row_index, row in enumerate(rows, 2):
-            fill = ERROR_FILL if row.status in critical else (WARNING_FILL if row.status != "OK" else None)
-            values = (row.sap_code, row.description, row.quantity, row.status, row.observation)
-            for column, value in enumerate(values, 1):
-                cell = sheet.cell(row_index, column, value)
-                cell.border = THIN_BORDER
-                cell.alignment = Alignment(horizontal="left" if column in (2, 5) else "center")
-                if fill is not None:
-                    cell.fill = fill
-        for column, width in {1: 16, 2: 48, 3: 14, 4: 20, 5: 42}.items():
-            sheet.column_dimensions[get_column_letter(column)].width = width
-        workbook.save(output)
-        return output
-
-    def _ocr_image_file(self, path: Path) -> str:
-        try:
-            from PIL import Image  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "OCR no disponible. Instala Pillow y pytesseract, y verifica Tesseract OCR local."
-            ) from exc
-        with Image.open(path) as image:
-            return self._ocr_image(image)
-
-    def _ocr_pdf(self, path: Path) -> str:
-        try:
-            import fitz  # type: ignore
-            from PIL import Image  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("PDF escaneado no disponible. Instala PyMuPDF y Pillow.") from exc
-
-        texts = []
-        with fitz.open(str(path)) as document:
-            for page in document:
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
-                texts.append(self._ocr_image(image))
-        return "\n".join(texts)
-
-    @staticmethod
-    def _extract_pdf_text(path: Path) -> str:
-        try:
-            import fitz  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("Importacion PDF no disponible. Instala PyMuPDF.") from exc
-
-        with fitz.open(str(path)) as document:
-            return "\n".join(page.get_text("text") for page in document)
-
-    def _ocr_image(self, image) -> str:
-        try:
-            import pytesseract  # type: ignore
-            from PIL import ImageEnhance, ImageFilter, ImageOps  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "OCR no disponible. Instala Pillow y pytesseract, y verifica Tesseract OCR local."
-            ) from exc
-
-        self._ensure_tesseract_available(pytesseract)
-        image = ImageOps.grayscale(image)
-        image = ImageOps.autocontrast(image)
-        scale = 2 if max(image.size) < 2600 else 1
-        if scale > 1:
-            image = image.resize((image.width * scale, image.height * scale))
-        image = ImageEnhance.Contrast(image).enhance(2.0)
-        image = image.filter(ImageFilter.MedianFilter(size=3))
-        image = image.point(lambda value: 255 if value > 165 else 0)
-        return pytesseract.image_to_string(image, config="--oem 3 --psm 6")
-
-    @staticmethod
-    def _ensure_tesseract_available(pytesseract) -> None:
-        if not shutil.which("tesseract"):
-            candidates = (
-                Path("C:/Program Files/Tesseract-OCR/tesseract.exe"),
-                Path("C:/Program Files (x86)/Tesseract-OCR/tesseract.exe"),
-            )
-            match = next((candidate for candidate in candidates if candidate.exists()), None)
-            if match is not None:
-                pytesseract.pytesseract.tesseract_cmd = str(match)
-        try:
-            pytesseract.get_tesseract_version()
-        except Exception as exc:
-            raise RuntimeError(
-                "Tesseract OCR no esta disponible. Instala Tesseract local o usa pegado manual, Excel/CSV o edicion manual."
-            ) from exc
 
     def load_tender_file(self, path: str | Path) -> list[TenderTest]:
         source = Path(path)
@@ -550,35 +405,6 @@ class EquivalenceService:
             )
         return result
 
-    def _parse_tender_line(self, line: str) -> TenderTest | None:
-        if self._looks_like_header([line]):
-            return None
-        preview = self._parse_import_line(line)
-        if preview is not None and preview.sap_code and preview.description and preview.quantity > 0:
-            return TenderTest(preview.sap_code, preview.description, preview.quantity)
-        match = re.match(r"^\s*(\d{6,})\s+(.+?)\s+([\d.,]+)\s*$", line)
-        if match:
-            return TenderTest(match.group(1), match.group(2).strip(" |-"), self._number(match.group(3), default=0))
-        parts = [part.strip() for part in re.split(r"\t|\s{2,}|\|", line) if part.strip()]
-        if len(parts) >= 3:
-            return TenderTest(parts[0], parts[1], self._number(parts[2], default=0))
-        return None
-
-    def _parse_import_line(self, line: str) -> ImportPreviewRow | None:
-        code_match = self._find_sap_code(line)
-        if code_match is None:
-            if self._looks_like_data_line(line):
-                return self.validate_import_row("", self._clean_import_description(line), 0, line)
-            return None
-
-        sap_code = code_match.group(1)
-        tail = line[code_match.end():]
-        quantity_match = self._last_quantity_match(tail)
-        quantity = self._number(quantity_match.group(1), default=0) if quantity_match is not None else 0
-        description_source = tail[:quantity_match.start()] if quantity_match is not None else tail
-        description = self._clean_import_description(description_source)
-        return self.validate_import_row(sap_code, description, quantity, line)
-
     def validate_import_row(
         self,
         sap_code: object,
@@ -612,19 +438,6 @@ class EquivalenceService:
         return ImportPreviewRow(code, desc, amount, status, "; ".join(observations), source_line)
 
     @staticmethod
-    def _find_sap_code(line: str):
-        candidates = list(re.finditer(r"(?<!\d)(\d{8})(?!\d)", line))
-        if candidates:
-            return next((match for match in candidates if match.group(1).startswith("30")), candidates[0])
-        return None
-
-    @staticmethod
-    def _last_quantity_match(text: str):
-        pattern = r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:[.,]\d+)?)(?![\w])"
-        matches = list(re.finditer(pattern, text))
-        return matches[-1] if matches else None
-
-    @staticmethod
     def _clean_import_description(text: str) -> str:
         cleaned = re.sub(r"[\t|]+", " ", str(text or ""))
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:;,.")
@@ -635,15 +448,6 @@ class EquivalenceService:
         return " ".join(tokens).strip(" -:;,.")
 
     @staticmethod
-    def _looks_like_data_line(line: str) -> bool:
-        text = normalize_description(line)
-        if len(text) < 8:
-            return False
-        if any(token in text for token in ("item paquete", "sub item", "codigo sap", "cantidad por")):
-            return False
-        return bool(re.search(r"[a-zA-Z]", line) and re.search(r"\d", line))
-
-    @staticmethod
     def _looks_like_weak_description(description: str) -> bool:
         normalized = normalize_description(description)
         if len(normalized) < 4:
@@ -651,10 +455,6 @@ class EquivalenceService:
         if re.search(r"\b\d{8}\b", description):
             return True
         return normalized in {"pba", "um", "descripcion"}
-
-    @staticmethod
-    def _has_useful_preview(rows: Iterable[ImportPreviewRow]) -> bool:
-        return any(row.sap_code and row.quantity > 0 for row in rows)
 
     def _result(
         self,

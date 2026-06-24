@@ -507,7 +507,7 @@ llamada `templates/EnvioDashboard.pbit` o `templates/EnvioDashboard.pbix`.
     @staticmethod
     def _theme() -> dict[str, object]:
         return {
-            "name": "InterAutomy Env\u00edos",
+            "name": "Automatic Env\u00edos",
             "dataColors": [
                 "#1F4E78",
                 "#5B9BD5",

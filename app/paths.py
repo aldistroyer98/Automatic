@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 
-APP_NAME = "InterAutomy"
+APP_NAME = "Automatic"
+DATA_DIR_ENV = "AUTOMATIC_DATA_DIR"
+LEGACY_APP_NAME = "InterAutomy"
+LEGACY_DATA_DIR_ENV = "INTERAUTOMY_DATA_DIR"
 
 
 def _project_root() -> Path:
@@ -36,37 +40,11 @@ class AppPaths:
     data_root: Path
 
     @property
-    def profiles_dir(self) -> Path:
-        return self.data_root / "profiles"
-
-    @property
     def logs_dir(self) -> Path:
         return self.data_root / "logs"
 
-    @property
-    def temp_dir(self) -> Path:
-        return self.data_root / "temp"
-
-    @property
-    def chrome_profile_dir(self) -> Path:
-        return self.data_root / "chrome-profile"
-
-    @property
-    def product_import_file(self) -> Path:
-        return self.temp_dir / "Pedido_Asesor_Importar.xlsx"
-
-    @property
-    def ui_settings_file(self) -> Path:
-        return self.data_root / "ui.ini"
-
     def ensure_runtime_dirs(self) -> None:
-        for directory in (
-            self.data_root,
-            self.profiles_dir,
-            self.logs_dir,
-            self.temp_dir,
-            self.chrome_profile_dir,
-        ):
+        for directory in (self.data_root, self.logs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
     def resource(self, name: str) -> Path:
@@ -79,28 +57,31 @@ class AppPaths:
                 return bundled
         return self.project_root / name
 
-    def resolve_input_file(self, path_or_name: str) -> Path:
-        """Resolve user input while preserving support for legacy relative paths."""
-
-        raw_path = str(path_or_name or "").strip()
-        if not raw_path:
-            return Path()
-        path = Path(raw_path).expanduser()
-        if path.is_absolute():
-            return path
-
-        project_candidate = self.project_root / path
-        if project_candidate.exists():
-            return project_candidate
-        return self.data_root / path
-
-
 @lru_cache(maxsize=1)
 def get_app_paths() -> AppPaths:
-    configured_data_root = os.environ.get("INTERAUTOMY_DATA_DIR")
+    configured_data_root = os.environ.get(DATA_DIR_ENV)
+    default_data_root = _local_app_data() / APP_NAME
+    if configured_data_root:
+        data_root = Path(configured_data_root)
+    else:
+        legacy_data_root = Path(
+            os.environ.get(LEGACY_DATA_DIR_ENV, _local_app_data() / LEGACY_APP_NAME)
+        )
+        data_root = _migrate_legacy_data(legacy_data_root, default_data_root)
     paths = AppPaths(
         project_root=_project_root(),
-        data_root=Path(configured_data_root) if configured_data_root else _local_app_data() / APP_NAME,
+        data_root=data_root,
     )
     paths.ensure_runtime_dirs()
     return paths
+
+
+def _migrate_legacy_data(source: Path, destination: Path) -> Path:
+    """Copy legacy user data once, preserving the source as a rollback backup."""
+    if destination.exists() or not source.exists() or source.resolve() == destination.resolve():
+        return destination
+    try:
+        shutil.copytree(source, destination)
+    except OSError:
+        return source
+    return destination

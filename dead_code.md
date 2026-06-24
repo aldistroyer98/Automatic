@@ -34,10 +34,11 @@ Fecha: 2026-06-24
 
 ## APIs públicas sin llamadas internas
 
-Se conservaron por compatibilidad: propiedades auxiliares de `AppPaths`,
-`parse_clipboard_text()`, `export_import_review()`, `scale_for()` y
-`CheckableComboBox.set_selected_data()`. La ausencia de llamadas dentro del
-repositorio no demuestra que no sean usadas por integraciones externas.
+Se eliminaron las propiedades auxiliares de `AppPaths` y las APIs de
+importación OCR/portapapeles que no tenían consumidores. Se conservaron
+`scale_for()`, `UiScale.from_percent()` y
+`CheckableComboBox.set_selected_data()` porque son utilidades públicas pequeñas
+y podrían ser usadas por integraciones de UI.
 
 ## Clases, constantes y archivos
 

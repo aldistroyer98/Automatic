@@ -28,8 +28,8 @@ def main() -> int:
     _configure_windows_taskbar_icon()
     configure_logging()
     app = QApplication(sys.argv)
-    app.setApplicationName("Automatic Envio")
-    app_icon = QIcon(str(get_app_paths().resource("resources/icons/Automy1.png")))
+    app.setApplicationName("Automatic")
+    app_icon = QIcon(str(get_app_paths().resource("resources/icons/Automatic.png")))
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
     app.setOrganizationName("Sistemas Analiticos")

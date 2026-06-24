@@ -7,6 +7,10 @@
 coordinan interacción; los servicios contienen lectura, validación, cálculo y
 escritura; los modelos son dataclasses sin dependencias de Qt.
 
+Los datos mutables se guardan bajo `%LOCALAPPDATA%/Automatic`. En el primer
+inicio, una instalación que solo tenga la carpeta de datos anterior se copia de
+forma no destructiva; la carpeta de origen permanece como respaldo.
+
 ## Flujo de envío
 
 1. `ShipmentTab` solicita un `.xlsx` o `.xlsm`.
@@ -29,6 +33,9 @@ escritura; los modelos son dataclasses sin dependencias de Qt.
    `CategoryManager`, conservando los nombres internos persistidos.
 5. `EquivalenceService.calculate()` calcula DET OC, DET ENV y cantidades,
    generando alertas sin modificar la lógica de cálculo.
+
+La entrada activa de licitaciones usa CSV. El proyecto no incluye OCR ni
+procesamiento de imágenes/PDF.
 
 ## Flujo Excel
 

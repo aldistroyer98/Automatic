@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         return self.header
 
     def _set_window_icon(self) -> None:
-        icon_path = self.paths.resource("resources/icons/Automy1.png")
+        icon_path = self.paths.resource("resources/icons/Automatic.png")
         if not icon_path.exists():
             return
 
