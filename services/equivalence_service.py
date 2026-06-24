@@ -47,7 +47,10 @@ class EquivalenceService:
                     cod_prod=str(item.get("cod_prod", "")).strip(),
                     cod_eqv=str(item.get("cod_eqv", "")).strip(),
                     product=str(item.get("product", "")).strip(),
-                    det_rvo=self._number(item.get("det_rvo", 0), default=0),
+                    det_rvo=self._optional_nonnegative_number(
+                        item.get("det_rvo"),
+                        field_name="DET RVO",
+                    ),
                     category=CategoryManager.internal_name(
                         str(item.get("category", "")).strip()
                     ),
@@ -117,24 +120,24 @@ class EquivalenceService:
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "Reactivos"
-        headers = ("CodProd", "CodEqv", "Producto", "DET RVO", "Categoría", "Orden")
+        headers = ("Orden", "CodProd", "CodEqv", "Producto", "DET RVO", "Categoría")
         self._write_headers(sheet, 1, headers)
         for row, product in enumerate(self.sorted_products(products), 2):
             values = (
+                product.order + 1,
                 product.cod_prod,
                 product.cod_eqv,
                 product.product,
                 product.det_rvo,
                 product.category,
-                product.order + 1,
             )
             for column, value in enumerate(values, 1):
                 cell = sheet.cell(row, column, value)
                 cell.border = THIN_BORDER
-                cell.alignment = Alignment(horizontal="left" if column == 3 else "center")
-                if column == 4:
+                cell.alignment = Alignment(horizontal="left" if column == 4 else "center")
+                if column == 5:
                     cell.number_format = "#,##0.######"
-        for column, width in {1: 18, 2: 18, 3: 48, 4: 14, 5: 24, 6: 10}.items():
+        for column, width in {1: 10, 2: 18, 3: 18, 4: 48, 5: 14, 6: 24}.items():
             sheet.column_dimensions[get_column_letter(column)].width = width
         workbook.save(output)
         return output
@@ -169,7 +172,7 @@ class EquivalenceService:
                 if product is None:
                     warnings.append(f"Producto no encontrado para {test.description}: {product_key}")
                     continue
-                if product.det_rvo <= 0:
+                if product.det_rvo is None or product.det_rvo <= 0:
                     warnings.append(f"Producto sin DET RVO: {product.cod_prod} | {product.product}")
                     results.append(self._result(test, product, det_oc, 0, 0, "Falta DET RVO"))
                     continue
@@ -356,9 +359,10 @@ class EquivalenceService:
                     return self._text(source_row[column]) if 0 <= column < len(source_row) else ""
                 if not any(value(field) for field in required):
                     continue
-                det_rvo = self._number(value("det_rvo"), default=-1)
-                if det_rvo < 0:
-                    raise ValueError("DET RVO debe ser numérico y no negativo.")
+                det_rvo = self._optional_nonnegative_number(
+                    value("det_rvo"),
+                    field_name="DET RVO",
+                )
                 order_text = value("order")
                 order = max(0, int(self._number(order_text, default=len(result) + 1)) - 1)
                 result.append(ReagentProduct(
@@ -366,8 +370,7 @@ class EquivalenceService:
                     cod_eqv=value("cod_eqv"),
                     product=value("product"),
                     det_rvo=det_rvo,
-                    category=CategoryManager.internal_name(value("category"))
-                    or "Sin Categoría",
+                    category=CategoryManager.internal_name(value("category")),
                     order=order,
                 ))
             return result
@@ -386,9 +389,10 @@ class EquivalenceService:
                 continue
             if not any(values):
                 continue
-            det_rvo = self._number(values[3], default=-1)
-            if det_rvo < 0:
-                raise ValueError("DET RVO debe ser numérico y no negativo.")
+            det_rvo = self._optional_nonnegative_number(
+                values[3],
+                field_name="DET RVO",
+            )
             result.append(
                 ReagentProduct(
                     cod_prod=values[0],
@@ -398,7 +402,7 @@ class EquivalenceService:
                     category=(
                         CategoryManager.internal_name(values[4])
                         if len(values) > 4 and values[4]
-                        else "Sin Categoría"
+                        else ""
                     ),
                     order=len(result),
                 )
@@ -505,6 +509,20 @@ class EquivalenceService:
         except ValueError:
             return default
 
+    @classmethod
+    def _optional_nonnegative_number(
+        cls,
+        value: object,
+        *,
+        field_name: str,
+    ) -> float | None:
+        if value is None or not str(value).strip():
+            return None
+        number = cls._number(value, default=float("nan"))
+        if not math.isfinite(number) or number < 0:
+            raise ValueError(f"{field_name} debe ser numérico y no negativo.")
+        return number
+
     @staticmethod
     def _text(value: object) -> str:
         if value is None:
@@ -565,7 +583,7 @@ class EquivalenceService:
                 result.cod_prod,
                 result.cod_eqv,
                 result.product,
-                result.det_rvo if result.det_rvo > 0 else "",
+                result.det_rvo if result.det_rvo is not None and result.det_rvo > 0 else "",
                 result.det_oc if result.det_oc > 0 else "",
                 result.det_env if result.det_env > 0 else "",
                 result.quantity if result.quantity > 0 else "",

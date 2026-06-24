@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from models.equivalence import ReagentProduct, TenderTest
 from services.equivalence_service import normalize_description
 from ui.common.table_helpers import resize_columns_by_ratio, set_table_alignment
+from ui.window_sizes import DIALOG_5_6, apply_fixed_window_size
 
 if TYPE_CHECKING:
     from ui.tabs.equivalence_tab import EquivalenceTab
@@ -34,7 +35,7 @@ class HomologationDialog(QDialog):
         self.tab = tab
         self._loading = False
         self.setWindowTitle("Homologación de equivalencias")
-        self.resize(1180, 720)
+        apply_fixed_window_size(self, DIALOG_5_6)
         self._build_ui()
         self.refresh_all()
         QTimer.singleShot(0, self._resize_tables)
@@ -224,7 +225,7 @@ class HomologationDialog(QDialog):
     def open_product_order(self) -> None:
         if not self._sync_products(show_warning=True):
             return
-        self.tab.open_order_dialog()
+        self.tab.open_category_dialog()
         self.refresh_all()
 
     def _load_tests(self) -> None:
@@ -294,15 +295,15 @@ class HomologationDialog(QDialog):
         if self._loading:
             return
         if item is not None and item.column() == 3:
-            value = self._valid_det_rvo(item.text())
-            if value is None:
+            valid, value = self._valid_det_rvo(item.text())
+            if not valid:
                 QMessageBox.warning(
                     self,
                     "DET RVO inválido",
                     "DET RVO debe ser un número mayor o igual a cero.",
                 )
                 self._loading = True
-                item.setText("0")
+                item.setText("")
                 self._loading = False
         self._sync_products(show_warning=False)
 
@@ -313,8 +314,8 @@ class HomologationDialog(QDialog):
             values = [self._item_text(self.product_table, row, column) for column in range(4)]
             if not any(values):
                 continue
-            det_rvo = self._valid_det_rvo(values[3])
-            if det_rvo is None:
+            valid, det_rvo = self._valid_det_rvo(values[3])
+            if not valid:
                 if show_warning:
                     QMessageBox.warning(
                         self,
@@ -341,14 +342,14 @@ class HomologationDialog(QDialog):
         return True
 
     @staticmethod
-    def _valid_det_rvo(value: object) -> float | None:
+    def _valid_det_rvo(value: object) -> tuple[bool, float | None]:
         text = str(value or "").strip().replace(" ", "").replace(",", ".")
         if not text:
-            return 0.0
+            return (True, None)
         if not re.fullmatch(r"\d+(?:\.\d+)?", text):
-            return None
+            return (False, None)
         number = float(text)
-        return number if number >= 0 else None
+        return (number >= 0, number if number >= 0 else None)
 
     def _selected_test(self) -> TenderTest | None:
         row = self.test_table.currentRow()

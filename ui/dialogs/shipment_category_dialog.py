@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -39,6 +40,7 @@ from ui.common.table_helpers import (
     make_readonly_item,
     resize_columns_by_ratio,
 )
+from ui.window_sizes import DIALOG_3_4, apply_fixed_window_size
 
 
 class ShipmentCategoryDialog(QDialog):
@@ -60,7 +62,7 @@ class ShipmentCategoryDialog(QDialog):
         self.line_filter = ""
         self.product_search = ""
         self.setWindowTitle("Configurar categorías")
-        self.resize(1220, 660)
+        apply_fixed_window_size(self, DIALOG_3_4)
         self._build_ui()
         self.refresh_tables()
         QTimer.singleShot(0, self._resize_tables)
@@ -92,9 +94,9 @@ class ShipmentCategoryDialog(QDialog):
         move_button.clicked.connect(self.move_selected_products_to_category)
         product_controls.addWidget(move_button, 2)
         top_row.addLayout(product_controls, 0, 2)
-        top_row.setColumnStretch(0, 8)
-        top_row.setColumnMinimumWidth(1, 48)
-        top_row.setColumnStretch(2, 20)
+        top_row.setColumnStretch(0, 9)
+        top_row.setColumnMinimumWidth(1, 45)
+        top_row.setColumnStretch(2, 16)
         root.addLayout(top_row)
 
         content = QGridLayout()
@@ -121,6 +123,8 @@ class ShipmentCategoryDialog(QDialog):
         delete_button.clicked.connect(self.delete_category)
         color_button = QPushButton("Color")
         color_button.clicked.connect(self.change_category_color)
+        for button in (new_button, delete_button, color_button):
+            button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         category_actions.addWidget(new_button, 1)
         category_actions.addWidget(delete_button, 1)
         category_actions.addWidget(color_button, 1)
@@ -136,7 +140,7 @@ class ShipmentCategoryDialog(QDialog):
             ("⏬", "last"),
         ):
             button = QPushButton(text)
-            button.setFixedWidth(48)
+            button.setFixedWidth(45)
             button.clicked.connect(lambda _checked=False, value=action: self.move_selected_to(value))
             move_box.addWidget(button)
         move_box.addStretch(1)
@@ -174,9 +178,9 @@ class ShipmentCategoryDialog(QDialog):
         product_actions.addWidget(exit_button)
         right.addLayout(product_actions)
         content.addLayout(right, 0, 2)
-        content.setColumnStretch(0, 8)
-        content.setColumnMinimumWidth(1, 48)
-        content.setColumnStretch(2, 20)
+        content.setColumnStretch(0, 9)
+        content.setColumnMinimumWidth(1, 45)
+        content.setColumnStretch(2, 16)
 
         root.addLayout(content, 1)
         self._resize_tables()

@@ -25,7 +25,7 @@ class ReagentProduct:
     cod_prod: str = ""
     cod_eqv: str = ""
     product: str = ""
-    det_rvo: float = 0.0
+    det_rvo: float | None = None
     category: str = ""
     order: int = 0
 
@@ -41,7 +41,7 @@ class EquivalenceResult:
     cod_prod: str
     cod_eqv: str
     product: str
-    det_rvo: float
+    det_rvo: float | None
     det_oc: float
     det_env: float
     quantity: int

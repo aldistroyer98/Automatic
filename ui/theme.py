@@ -89,8 +89,9 @@ def _build_stylesheet(mode: ThemeMode, scale: UiScale | None = None) -> str:
         background: transparent;
         border: none;
     }}
-    QWidget#HeaderBalance {{
+    QWidget#HeaderBalance, QWidget#HeaderLogoContainer {{
         background: transparent;
+        border: none;
     }}
     QLabel#HeaderTitle {{
         color: #ffffff;

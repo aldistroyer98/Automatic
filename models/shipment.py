@@ -69,6 +69,22 @@ class ShipmentOptions:
     licitaciones: set[str] = field(default_factory=set)
 
 
+@dataclass
+class ShipmentFilterState:
+    selected_clients: set[str] = field(default_factory=set)
+    selected_years: set[int] = field(default_factory=set)
+    selected_lines: set[str] = field(default_factory=set)
+    selected_comodatos: set[str] = field(default_factory=set)
+
+    def copy(self) -> "ShipmentFilterState":
+        return ShipmentFilterState(
+            selected_clients=set(self.selected_clients),
+            selected_years=set(self.selected_years),
+            selected_lines=set(self.selected_lines),
+            selected_comodatos=set(self.selected_comodatos),
+        )
+
+
 @dataclass(frozen=True)
 class ShipmentAnalysis:
     source: Path
@@ -109,4 +125,4 @@ class ShipmentPreviewRow:
     categoria: str
     total: float
     meses: int
-    prod: float
+    prod: float | None

@@ -82,12 +82,14 @@ class MainWindow(QMainWindow):
         self.header_layout = QHBoxLayout(self.header)
 
         self.header_left = QWidget(self.header)
+        self.header_left.setObjectName("HeaderLogoContainer")
         self.header_left_layout = QHBoxLayout(self.header_left)
         self.header_left_layout.setContentsMargins(0, 0, 0, 0)
         self.logo_label = QLabel(self.header_left)
         self.logo_label.setObjectName("HeaderLogo")
         self.logo_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.logo_label.setScaledContents(False)
+        self.logo_label.setAttribute(Qt.WA_TranslucentBackground, True)
         self.logo_label.setContentsMargins(8, 4, 8, 4)
         self.header_left_layout.addWidget(self.logo_label)
         self.header_left_layout.addStretch(1)
@@ -198,12 +200,16 @@ class MainWindow(QMainWindow):
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
+        self.logo_label.clear()
         self.logo_label.setPixmap(pixmap)
         self.logo_label.show()
 
     def _style_logo_label(self) -> None:
         s = self.ui_scale.px
-        self.logo_label.setMinimumSize(s(220), s(72))
+        self.logo_label.setFixedSize(
+            max(s(220), self.header_left.width() - s(20)),
+            s(72),
+        )
         self.logo_label.setStyleSheet(
             f"QLabel#HeaderLogo {{ background: transparent; border: none; padding: {s(2)}px {s(4)}px; }}"
         )

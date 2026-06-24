@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QSize
 
+from ui.window_sizes import BASE_WINDOW_SIZE
 
-BASE_WIDTH = 1440
-BASE_HEIGHT = 810
+BASE_WIDTH = BASE_WINDOW_SIZE.width()
+BASE_HEIGHT = BASE_WINDOW_SIZE.height()
 AVAILABLE_SCALES = (1.0, 0.9, 0.8, 0.7, 0.6)
 DEFAULT_SCALE = 1.0
 

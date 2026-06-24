@@ -348,12 +348,25 @@ class ShipmentService:
                 record.cliente, record.anio, record.linea, record.cod_prod,
                 record.cod_eqv, record.producto, record.categoria
             ].append(record)
+        activity = self._computable_months_by_block(filtered, options)
         result = []
         for key, rows in grouped.items():
-            first_month, last_month = self._active_month_period(rows, key[1], options)
-            divisor = last_month - first_month + 1 if first_month and last_month else 0
-            total = sum(row.cantidad for row in rows if first_month <= row.mes <= last_month)
-            result.append(ShipmentPreviewRow(*key, total, divisor, total / divisor if divisor else 0))
+            block_key = (key[0], key[1], key[2])
+            computable_months = activity.get(block_key, set())
+            total = sum(
+                row.cantidad
+                for row in rows
+                if row.mes in computable_months
+            )
+            divisor = len(computable_months)
+            result.append(
+                ShipmentPreviewRow(
+                    *key,
+                    total,
+                    divisor,
+                    total / divisor if divisor else None,
+                )
+            )
         return sorted(
             result,
             key=lambda row: (
@@ -566,6 +579,59 @@ class ShipmentService:
                 return (start, month - 3)
         return (start, closed_month)
 
+    @staticmethod
+    def _report_block_key(record: ShipmentRecord) -> tuple[str, int, str]:
+        return (record.cliente, record.anio, record.linea)
+
+    def _computable_months_by_block(
+        self,
+        records: Sequence[ShipmentRecord],
+        options: ShipmentOptions,
+    ) -> dict[tuple[str, int, str], set[int]]:
+        groups: dict[tuple[str, int, str], list[ShipmentRecord]] = defaultdict(list)
+        for record in records:
+            groups[self._report_block_key(record)].append(record)
+        return {
+            key: self._computable_months(group, key[1], options)
+            for key, group in groups.items()
+        }
+
+    def _computable_months(
+        self,
+        records: Sequence[ShipmentRecord],
+        year: int,
+        options: ShipmentOptions,
+    ) -> set[int]:
+        closed_month = self._last_valid_month(year, options)
+        positive_months = {
+            record.mes
+            for record in records
+            if record.anio == year and record.cantidad > 0 and record.mes <= closed_month
+        }
+        computable = set(positive_months)
+        month = 1
+        while month <= closed_month:
+            if month in positive_months:
+                month += 1
+                continue
+            run_start = month
+            while month <= closed_month and month not in positive_months:
+                month += 1
+            if month - run_start < 3:
+                computable.update(range(run_start, month))
+        return computable
+
+    def _computable_periods_for_records(
+        self,
+        records: Sequence[ShipmentRecord],
+        activity: dict[tuple[str, int, str], set[int]],
+    ) -> set[tuple[int, int]]:
+        return {
+            (key[1], month)
+            for key in {self._report_block_key(record) for record in records}
+            for month in activity.get(key, set())
+        }
+
     def _active_date_period(
         self,
         records: Sequence[ShipmentRecord],
@@ -635,21 +701,29 @@ class ShipmentService:
 
         row = 4
         products = self._distinct_products(records, category_config)
-        cutoff_month = self.today.month if options.exclude_current_month else self.today.month + 1
-        cutoff_year = self.today.year
-        if cutoff_month == 13:
-            cutoff_year += 1
-            cutoff_month = 1
-        cutoff = f"DATE({cutoff_year},{cutoff_month},1)"
+        activity = self._computable_months_by_block(records, options)
         for code, equivalent, product, category in products:
+            product_records = [
+                record
+                for record in records
+                if record.cod_prod == code
+                and record.cod_eqv == equivalent
+                and record.producto == product
+            ]
+            periods = self._computable_periods_for_records(product_records, activity)
+            total = sum(
+                record.cantidad
+                for record in product_records
+                if record.mes in activity.get(self._report_block_key(record), set())
+            )
             worksheet.cell(row, 1, code).number_format = "@"
             worksheet.cell(row, 2, equivalent).number_format = "@"
             worksheet.cell(row, 3, product)
-            worksheet.cell(row, 4, f'=IFERROR(SUMIFS(\'Data_Normalizada\'!$W:$W,\'Data_Normalizada\'!$T:$T,A{row}),0)')
-            worksheet.cell(row, 5, f'=IFERROR(SUMIFS(\'Data_Normalizada\'!$X:$X,\'Data_Normalizada\'!$T:$T,A{row}),0)')
-            worksheet.cell(row, 6, f'=SUMIFS(\'Data_Normalizada\'!$G:$G,\'Data_Normalizada\'!$D:$D,A{row},\'Data_Normalizada\'!$O:$O,"<"&{cutoff})')
-            worksheet.cell(row, 7, f'=IF(OR(D{row}=0,E{row}=0),0,(YEAR(E{row})-YEAR(D{row}))*12+MONTH(E{row})-MONTH(D{row})+1)')
-            worksheet.cell(row, 8, f'=IF(G{row}=0,0,F{row}/G{row})')
+            worksheet.cell(row, 4, date(*min(periods), 1) if periods else None)
+            worksheet.cell(row, 5, date(*max(periods), 1) if periods else None)
+            worksheet.cell(row, 6, total)
+            worksheet.cell(row, 7, len(periods))
+            worksheet.cell(row, 8, total / len(periods) if periods else None)
             worksheet.cell(row, 4).number_format = "mmm-yyyy"
             worksheet.cell(row, 5).number_format = "mmm-yyyy"
             self._style_summary_row(worksheet, row, category, 8, category_config)
@@ -671,15 +745,27 @@ class ShipmentService:
             row += 1
             client_records = [record for record in records if record.cliente == client]
             for code, equivalent, product, category in self._distinct_products(client_records, category_config):
-                key = self._key_join(client, code)
+                product_records = [
+                    record
+                    for record in client_records
+                    if record.cod_prod == code
+                    and record.cod_eqv == equivalent
+                    and record.producto == product
+                ]
+                periods = self._computable_periods_for_records(product_records, activity)
+                total = sum(
+                    record.cantidad
+                    for record in product_records
+                    if record.mes in activity.get(self._report_block_key(record), set())
+                )
                 worksheet.cell(row, 1, code).number_format = "@"
                 worksheet.cell(row, 2, equivalent).number_format = "@"
                 worksheet.cell(row, 3, product)
-                worksheet.cell(row, 4, f'=IFERROR(SUMIFS(\'Data_Normalizada\'!$Y:$Y,\'Data_Normalizada\'!$S:$S,{self._excel_string(key)}),0)')
-                worksheet.cell(row, 5, f'=IFERROR(SUMIFS(\'Data_Normalizada\'!$Z:$Z,\'Data_Normalizada\'!$S:$S,{self._excel_string(key)}),0)')
-                worksheet.cell(row, 6, f'=SUMIFS(\'Data_Normalizada\'!$G:$G,\'Data_Normalizada\'!$B:$B,{self._excel_string(client)},\'Data_Normalizada\'!$D:$D,A{row},\'Data_Normalizada\'!$O:$O,"<"&{cutoff})')
-                worksheet.cell(row, 7, f'=IF(OR(D{row}=0,E{row}=0),0,(YEAR(E{row})-YEAR(D{row}))*12+MONTH(E{row})-MONTH(D{row})+1)')
-                worksheet.cell(row, 8, f'=IF(G{row}=0,0,F{row}/G{row})')
+                worksheet.cell(row, 4, date(*min(periods), 1) if periods else None)
+                worksheet.cell(row, 5, date(*max(periods), 1) if periods else None)
+                worksheet.cell(row, 6, total)
+                worksheet.cell(row, 7, len(periods))
+                worksheet.cell(row, 8, total / len(periods) if periods else None)
                 worksheet.cell(row, 4).number_format = "mmm-yyyy"
                 worksheet.cell(row, 5).number_format = "mmm-yyyy"
                 self._style_summary_row(worksheet, row, category, 8, category_config)
@@ -728,23 +814,20 @@ class ShipmentService:
                 for column, header in enumerate(headers, 1):
                     worksheet.cell(row, column, header)
                 self._style_header(worksheet, row, 18)
+                block_computable_months = self._computable_months(block, year, options)
+                for month in range(1, 13):
+                    if month not in block_computable_months:
+                        worksheet.cell(row, month + 3).fill = INACTIVE_FILL
                 row += 1
                 for code, equivalent, product, category in products:
-                    product_records = [
-                        record for record in block
-                        if record.cod_prod == code
-                        and record.cod_eqv == equivalent
-                        and record.producto == product
-                    ]
-                    first_month, last_month = self._active_month_period(product_records, year, options)
-                    active_months = last_month - first_month + 1 if first_month and last_month else 0
+                    active_months = len(block_computable_months)
                     worksheet.cell(row, 1, code).number_format = "@"
                     worksheet.cell(row, 2, equivalent).number_format = "@"
                     worksheet.cell(row, 3, product)
                     for month in range(1, 13):
                         cell = worksheet.cell(row, month + 3)
-                        if month < first_month or month > last_month:
-                            cell.value = '=""'
+                        if month not in block_computable_months:
+                            cell.value = None
                             cell.fill = INACTIVE_FILL
                         else:
                             criteria = [
@@ -762,7 +845,7 @@ class ShipmentService:
                             cell.number_format = "0"
                     worksheet.cell(row, 16, f"=SUM(D{row}:O{row})")
                     worksheet.cell(row, 17, active_months)
-                    worksheet.cell(row, 18, f'=IF(Q{row}=0,0,P{row}/Q{row})')
+                    worksheet.cell(row, 18, f'=IF(Q{row}=0,"",P{row}/Q{row})')
                     worksheet.cell(row, 18).number_format = "0.0"
                     fill = self._category_fill(category, category_config)
                     if options.use_category_colors and fill is not None:

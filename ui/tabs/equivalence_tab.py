@@ -14,9 +14,11 @@ from PySide6.QtWidgets import (
 from app.paths import get_app_paths
 from models.equivalence import EquivalenceResult, ImportPreviewRow, ReagentProduct, TenderTest
 from services.equivalence_service import EquivalenceService, normalize_description
+from services.equivalence_category_service import EquivalenceCategoryService
 from ui.dialogs.homologation_dialog import HomologationDialog
 from ui.dialogs.import_preview_dialog import ImportPreviewDialog
 from ui.dialogs.product_order_dialog import ProductOrderDialog
+from ui.dialogs.shipment_category_dialog import ShipmentCategoryDialog
 
 
 class AlertsDialog(QDialog):
@@ -298,6 +300,21 @@ class EquivalenceTab(QWidget):
             self.save_state(show_message=False)
             self.recalculate()
 
+    def open_category_dialog(self) -> None:
+        self._sync_products_from_table()
+        category_service = EquivalenceCategoryService(self.state, self.service)
+        category_state = category_service.dialog_state()
+        dialog = ShipmentCategoryDialog(
+            category_state,
+            category_service,
+            category_state.assignments.keys(),
+            parent=self,
+        )
+        dialog.exec()
+        self._load_state_to_products()
+        self._refresh_equivalences()
+        self.recalculate()
+
     def add_equivalence(self) -> None:
         test = self._selected_test()
         product = self._selected_product()
@@ -409,7 +426,7 @@ class EquivalenceTab(QWidget):
                     values[0],
                     values[1],
                     values[2],
-                    self._number(values[3]),
+                    self._optional_number(values[3]),
                     values[4],
                     current.order if current is not None else len(products),
                 )
@@ -543,5 +560,12 @@ class EquivalenceTab(QWidget):
             return 0.0
 
     @staticmethod
-    def _format_number(value: float) -> str:
+    def _optional_number(value: object) -> float | None:
+        text = str(value or "").strip()
+        return EquivalenceTab._number(text) if text else None
+
+    @staticmethod
+    def _format_number(value: float | None) -> str:
+        if value is None:
+            return ""
         return str(int(value)) if float(value or 0).is_integer() else f"{value:.2f}"
