@@ -89,6 +89,8 @@ class ImportPreviewDialog(QDialog):
 
         self.table = QTableWidget(0, 5, self)
         self.table.setHorizontalHeaderLabels(("Código SAP", "Descripción", "Cantidad", "Estado", "Observación"))
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
@@ -102,35 +104,23 @@ class ImportPreviewDialog(QDialog):
         root.addWidget(self.table, 1)
 
         edit_row = QHBoxLayout()
-        add_button = QPushButton("Agregar fila", self)
+        add_button = QPushButton("Agregar", self)
         add_button.clicked.connect(self.add_row)
-        delete_button = QPushButton("Eliminar fila", self)
-        delete_button.clicked.connect(self.delete_rows)
-        manual_button = QPushButton("Corregir manualmente", self)
+        manual_button = QPushButton("Editar", self)
         manual_button.clicked.connect(self.edit_current_cell)
+        delete_button = QPushButton("Eliminar", self)
+        delete_button.clicked.connect(self.delete_rows)
         edit_row.addWidget(add_button)
-        edit_row.addWidget(delete_button)
         edit_row.addWidget(manual_button)
+        edit_row.addWidget(delete_button)
         edit_row.addStretch(1)
-        root.addLayout(edit_row)
-
-        action_row = QHBoxLayout()
-        confirm_button = QPushButton("Confirmar carga", self)
+        confirm_button = QPushButton("Confirmar", self)
         confirm_button.clicked.connect(self.confirm_load)
-        reprocess_button = QPushButton(
-            "Recargar CSV" if self.path.suffix.lower() == ".csv" else "Reprocesar imagen",
-            self,
-        )
-        reprocess_button.clicked.connect(self.reprocess)
-        export_button = QPushButton("Exportar revision", self)
-        export_button.clicked.connect(self.export_review)
         cancel_button = QPushButton("Cancelar", self)
         cancel_button.clicked.connect(self.reject)
-        for button in (confirm_button, reprocess_button, export_button):
-            action_row.addWidget(button)
-        action_row.addStretch(1)
-        action_row.addWidget(cancel_button)
-        root.addLayout(action_row)
+        edit_row.addWidget(confirm_button)
+        edit_row.addWidget(cancel_button)
+        root.addLayout(edit_row)
 
     def add_row(self) -> None:
         self._append_row(ImportPreviewRow(status="Fila incompleta"))
@@ -243,8 +233,9 @@ class ImportPreviewDialog(QDialog):
             item = QTableWidgetItem(str(value))
             if column in (3, 4):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            if column in (0, 2, 3):
-                item.setTextAlignment(Qt.AlignCenter)
+            item.setTextAlignment(
+                Qt.AlignLeft | Qt.AlignVCenter if column == 1 else Qt.AlignCenter
+            )
             self.table.setItem(row_index, column, item)
         self._apply_row_color(row_index, row.status)
 
@@ -298,7 +289,7 @@ class ProductOrderDialog(QDialog):
         self._loading = False
         self._active_table = "category"
         self.search_text = ""
-        self.setWindowTitle("Orden / categorías")
+        self.setWindowTitle("Categoría")
         self.resize(980, 600)
         self._build_ui()
         self.refresh()
@@ -664,7 +655,7 @@ class ProductOrderDialog(QDialog):
 
     def _resize_columns(self) -> None:
         self._resize_table(self.category_table, (2, 4, 3))
-        self._resize_table(self.product_table, (2, 4, 4, 8))
+        self._resize_table(self.product_table, (2, 3, 3, 8))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -690,6 +681,7 @@ class HomologationDialog(QDialog):
         self.resize(1180, 720)
         self._build_ui()
         self.refresh_all()
+        QTimer.singleShot(0, self._resize_tables)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -698,13 +690,13 @@ class HomologationDialog(QDialog):
         self.test_search.setPlaceholderText("Buscar prueba")
         self.test_search.textChanged.connect(self._filter_tests)
         self.product_search = QLineEdit(self)
-        self.product_search.setPlaceholderText("Buscar reactivo")
+        self.product_search.setPlaceholderText("Buscar producto/reactivo")
         self.product_search.textChanged.connect(self._filter_products)
         search_row.addWidget(QLabel("Pruebas:"))
         search_row.addWidget(self.test_search, 1)
-        search_row.addWidget(QLabel("Reactivos:"))
+        search_row.addWidget(QLabel("Producto:"))
         search_row.addWidget(self.product_search, 1)
-        order_top_button = QPushButton("Orden / categorías", self)
+        order_top_button = QPushButton("Categoría", self)
         order_top_button.clicked.connect(self.open_product_order)
         search_row.addWidget(order_top_button)
         root.addLayout(search_row)
@@ -714,7 +706,7 @@ class HomologationDialog(QDialog):
         self.test_table.verticalHeader().setVisible(False)
         self.test_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.test_table.setHorizontalHeaderLabels(("Código SAP", "Descripción", "Cantidad"))
-        self.test_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.test_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self.test_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.test_table.itemChanged.connect(self._tests_changed)
         top.addWidget(self.test_table, 5)
@@ -734,7 +726,7 @@ class HomologationDialog(QDialog):
         self.product_table.verticalHeader().setVisible(False)
         self.product_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.product_table.setHorizontalHeaderLabels(("CodProd", "CodEqv", "Producto", "DET RVO"))
-        self.product_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.product_table.setItemDelegateForColumn(3, NonNegativeNumberDelegate(self.product_table))
         self.product_table.itemChanged.connect(self._products_changed)
@@ -772,17 +764,6 @@ class HomologationDialog(QDialog):
         delete_tests = QPushButton("Eliminar prueba", self)
         delete_tests.clicked.connect(self.delete_tests)
         bottom.addWidget(delete_tests)
-        load_products = QPushButton("Cargar reactivos", self)
-        load_products.clicked.connect(self.load_products)
-        add_product = QPushButton("Agregar reactivo", self)
-        add_product.clicked.connect(self.add_product)
-        delete_products = QPushButton("Eliminar reactivo", self)
-        delete_products.clicked.connect(self.delete_products)
-        order_products = QPushButton("Orden / categorias", self)
-        order_products.clicked.connect(self.open_product_order)
-        for button in (load_products, add_product, delete_products, order_products):
-            bottom.addWidget(button)
-            button.hide()
         bottom.addStretch(1)
         close_button = QPushButton("Cerrar", self)
         close_button.clicked.connect(self.accept)
@@ -846,9 +827,21 @@ class HomologationDialog(QDialog):
         self.refresh_all()
 
     def save_products(self) -> None:
-        if self._sync_products(show_warning=True):
-            self.tab.save_state(show_message=True)
-            self.refresh_all()
+        if not self._sync_products(show_warning=True):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar productos/reactivos",
+            "Reactivos_Equivalencia.xlsx",
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            output = self.tab.service.export_products_excel(path, self.tab.state.products)
+            QMessageBox.information(self, "Reactivos", f"Archivo generado correctamente:\n{output}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error al guardar reactivos", str(exc))
 
     def add_product(self) -> None:
         self._loading = True
@@ -884,9 +877,7 @@ class HomologationDialog(QDialog):
         for row, test in enumerate(tests):
             for column, value in enumerate((test.sap_code, test.description, self.tab._format_number(test.quantity))):
                 item = QTableWidgetItem(str(value))
-                item.setTextAlignment(
-                    Qt.AlignLeft | Qt.AlignVCenter if column == 1 else Qt.AlignCenter
-                )
+                item.setTextAlignment(Qt.AlignCenter)
                 self.test_table.setItem(row, column, item)
 
     def _load_products(self) -> None:
@@ -1026,6 +1017,24 @@ class HomologationDialog(QDialog):
         for row in range(table.rowCount()):
             haystack = normalize_description(" ".join(self._item_text(table, row, column) for column in range(columns)))
             table.setRowHidden(row, bool(needle and needle not in haystack))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_tables()
+
+    def _resize_tables(self) -> None:
+        self._resize_table(self.test_table, (2, 8, 2))
+        self._resize_table(self.product_table, (2, 2, 6, 2))
+
+    @staticmethod
+    def _resize_table(table: QTableWidget, ratios: tuple[int, ...]) -> None:
+        available = max(1, table.viewport().width())
+        total = sum(ratios)
+        used = 0
+        for column, ratio in enumerate(ratios):
+            width = available - used if column == len(ratios) - 1 else int(available * ratio / total)
+            used += width
+            table.setColumnWidth(column, max(1, width))
 
     @staticmethod
     def _item_text(table: QTableWidget, row: int, column: int) -> str:

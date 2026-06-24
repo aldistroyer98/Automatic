@@ -547,7 +547,7 @@ class ShipmentCategoryDialog(QDialog):
         if not hasattr(self, "category_table") or not hasattr(self, "product_table"):
             return
         self._resize_columns(self.category_table, (2, 4, 3))
-        self._resize_columns(self.product_table, (2, 4, 4, 8))
+        self._resize_columns(self.product_table, (2, 3, 3, 8))
 
     @staticmethod
     def _resize_columns(table: QTableWidget, ratios: tuple[int, ...]) -> None:

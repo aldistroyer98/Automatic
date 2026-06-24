@@ -256,6 +256,40 @@ class EquivalenceService:
             return self._load_products_excel(source)
         raise ValueError("Formato no soportado. Usa CSV o Excel.")
 
+    def export_products_excel(
+        self,
+        path: str | Path,
+        products: Iterable[ReagentProduct],
+    ) -> Path:
+        output = Path(path)
+        if output.suffix.lower() != ".xlsx":
+            output = output.with_suffix(".xlsx")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Reactivos"
+        headers = ("CodProd", "CodEqv", "Producto", "DET RVO", "Categoría", "Orden")
+        self._write_headers(sheet, 1, headers)
+        for row, product in enumerate(self.sorted_products(products), 2):
+            values = (
+                product.cod_prod,
+                product.cod_eqv,
+                product.product,
+                product.det_rvo,
+                product.category,
+                product.order + 1,
+            )
+            for column, value in enumerate(values, 1):
+                cell = sheet.cell(row, column, value)
+                cell.border = THIN_BORDER
+                cell.alignment = Alignment(horizontal="left" if column == 3 else "center")
+                if column == 4:
+                    cell.number_format = "#,##0.######"
+        for column, width in {1: 18, 2: 18, 3: 48, 4: 14, 5: 24, 6: 10}.items():
+            sheet.column_dimensions[get_column_letter(column)].width = width
+        workbook.save(output)
+        return output
+
     def calculate(
         self,
         tests: Iterable[TenderTest],
@@ -447,6 +481,47 @@ class EquivalenceService:
         return result
 
     def _rows_to_products(self, rows) -> list[ReagentProduct]:
+        if not rows:
+            return []
+        header = [normalize_description(value).replace(" ", "_") for value in rows[0]]
+        aliases = {
+            "cod_prod": lambda value: value in {"codprod", "cod_prod", "codigo_producto"},
+            "cod_eqv": lambda value: value in {"codeqv", "cod_eqv", "codigo_equivalente"},
+            "product": lambda value: value in {"producto", "product", "descripcion"},
+            "det_rvo": lambda value: value.replace("_", "") == "detrvo",
+            "category": lambda value: value.startswith("categoria"),
+            "order": lambda value: value in {"orden", "order"},
+        }
+        columns = {
+            field: next((index for index, value in enumerate(header) if matches(value)), -1)
+            for field, matches in aliases.items()
+        }
+        required = ("cod_prod", "cod_eqv", "product", "det_rvo")
+        if all(columns[field] >= 0 for field in required):
+            result = []
+            for source_row in rows[1:]:
+                value = lambda field: (
+                    self._text(source_row[columns[field]])
+                    if columns[field] >= 0 and columns[field] < len(source_row)
+                    else ""
+                )
+                if not any(value(field) for field in required):
+                    continue
+                det_rvo = self._number(value("det_rvo"), default=-1)
+                if det_rvo < 0:
+                    raise ValueError("DET RVO debe ser numérico y no negativo.")
+                order_text = value("order")
+                order = max(0, int(self._number(order_text, default=len(result) + 1)) - 1)
+                result.append(ReagentProduct(
+                    cod_prod=value("cod_prod"),
+                    cod_eqv=value("cod_eqv"),
+                    product=value("product"),
+                    det_rvo=det_rvo,
+                    category=value("category"),
+                    order=order,
+                ))
+            return result
+
         result = []
         for row in rows:
             values = [self._text(value) for value in row[:6]]
@@ -645,55 +720,36 @@ class EquivalenceService:
             str(item["name"]).strip(): str(item.get("color", "E2F0D9")).strip().lstrip("#")
             for item in category_config
         }
-        configured_order = [
-            str(item["name"]).strip()
-            for item in category_config
-            if normalize_description(item["name"]) != "sin categoria"
-        ]
-        present = {
-            result.category.strip()
-            for result in results
-            if result.category.strip()
-            and normalize_description(result.category) != "sin categoria"
+        category_order = {
+            str(item["name"]).strip(): index
+            for index, item in enumerate(category_config)
         }
-        ordered = [category for category in configured_order if category in present]
-        ordered.extend(sorted(present - set(ordered), key=str.casefold))
-
-        for category in ordered:
-            sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(headers))
-            sheet.cell(row, 1, category.upper())
-            self._style_section(sheet, row, len(headers), colors.get(category))
-            row += 1
-            row = self._write_headers(sheet, row, headers)
-            row = self._write_result_rows(
-                sheet,
-                row,
-                [item for item in results if item.category.strip() == category],
-                colors.get(category),
-            )
-            row += 1
-
-        uncategorized = [
-            result for result in results
-            if not result.category.strip()
-            or normalize_description(result.category) == "sin categoria"
-        ]
-        if uncategorized:
-            row = self._write_headers(sheet, row, headers, warning=True)
-            row = self._write_result_rows(sheet, row, uncategorized)
-        return row
+        ordered_results = sorted(
+            results,
+            key=lambda item: (
+                category_order.get(item.category.strip(), len(category_order)),
+                item.category.casefold(),
+                item.product.casefold(),
+            ),
+        )
+        row = self._write_headers(sheet, row, headers)
+        return self._write_result_rows(sheet, row, ordered_results, colors)
 
     @staticmethod
     def _write_result_rows(
         sheet,
         row: int,
         results: Iterable[EquivalenceResult],
-        color: str | None = None,
+        colors: dict[str, str] | None = None,
     ) -> int:
-        fill = None
-        if color and re.fullmatch(r"[0-9A-Fa-f]{6}", color):
-            fill = PatternFill("solid", fgColor=color.upper())
         for result in results:
+            color = (colors or {}).get(result.category.strip(), "")
+            fill = (
+                PatternFill("solid", fgColor=color.upper())
+                if re.fullmatch(r"[0-9A-Fa-f]{6}", color)
+                and normalize_description(result.category) != "sin categoria"
+                else None
+            )
             values = (
                 result.sap_code,
                 result.test_description,
@@ -711,7 +767,7 @@ class EquivalenceService:
                 cell.alignment = Alignment(horizontal="left" if column in (2, 5) else "center")
                 if column >= 6:
                     cell.number_format = "#,##0.##"
-                if fill is not None:
+                if fill is not None and column == 5:
                     cell.fill = fill
             row += 1
         return row
