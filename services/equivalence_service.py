@@ -14,11 +14,12 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from models.equivalence import EquivalenceResult, EquivalenceState, ImportPreviewRow, ReagentProduct, TenderTest
+from services.category_manager import CategoryManager
+from services.excel_reader import sanitize_tabular_rows
 
 
 HEADER_FILL = PatternFill("solid", fgColor="D9EAF7")
 TITLE_FILL = PatternFill("solid", fgColor="1F4E78")
-SECTION_FILL = PatternFill("solid", fgColor="E2F0D9")
 WARNING_FILL = PatternFill("solid", fgColor="FCE4D6")
 ERROR_FILL = PatternFill("solid", fgColor="F4CCCC")
 THIN_BORDER = Border(
@@ -49,7 +50,9 @@ class EquivalenceService:
                     cod_eqv=str(item.get("cod_eqv", "")).strip(),
                     product=str(item.get("product", "")).strip(),
                     det_rvo=self._number(item.get("det_rvo", 0), default=0),
-                    category=str(item.get("category", "")).strip(),
+                    category=CategoryManager.internal_name(
+                        str(item.get("category", "")).strip()
+                    ),
                     order=int(item.get("order", index)),
                 )
                 for index, item in enumerate(data.get("products", []))
@@ -124,15 +127,6 @@ class EquivalenceService:
             text = self._ocr_image_file(source)
             return self.parse_import_text(text), text
         raise ValueError("Formato no soportado. Usa PNG, JPG, JPEG o PDF.")
-
-    def extract_tender_tests_from_image(self, path: str | Path) -> tuple[list[TenderTest], str]:
-        rows, text = self.extract_import_preview(path)
-        tests = [
-            TenderTest(row.sap_code, row.description, row.quantity)
-            for row in rows
-            if row.status == "OK"
-        ]
-        return tests, text
 
     def export_import_review(self, path: str | Path, rows: Iterable[ImportPreviewRow]) -> Path:
         output = Path(path)
@@ -321,7 +315,7 @@ class EquivalenceService:
                     warnings.append(f"Producto no encontrado para {test.description}: {product_key}")
                     continue
                 if product.det_rvo <= 0:
-                    warnings.append(f"Reactivo sin DET RVO: {product.cod_prod} | {product.product}")
+                    warnings.append(f"Producto sin DET RVO: {product.cod_prod} | {product.product}")
                     results.append(self._result(test, product, det_oc, 0, 0, "Falta DET RVO"))
                     continue
                 quantity = math.ceil(det_oc / product.det_rvo)
@@ -470,6 +464,7 @@ class EquivalenceService:
             workbook.close()
 
     def _rows_to_tests(self, rows) -> list[TenderTest]:
+        rows = sanitize_tabular_rows(rows)
         result = []
         for row in rows:
             values = [self._text(value) for value in row[:3]]
@@ -481,6 +476,7 @@ class EquivalenceService:
         return result
 
     def _rows_to_products(self, rows) -> list[ReagentProduct]:
+        rows = sanitize_tabular_rows(rows)
         if not rows:
             return []
         header = [normalize_description(value).replace(" ", "_") for value in rows[0]]
@@ -500,11 +496,9 @@ class EquivalenceService:
         if all(columns[field] >= 0 for field in required):
             result = []
             for source_row in rows[1:]:
-                value = lambda field: (
-                    self._text(source_row[columns[field]])
-                    if columns[field] >= 0 and columns[field] < len(source_row)
-                    else ""
-                )
+                def value(field: str) -> str:
+                    column = columns[field]
+                    return self._text(source_row[column]) if 0 <= column < len(source_row) else ""
                 if not any(value(field) for field in required):
                     continue
                 det_rvo = self._number(value("det_rvo"), default=-1)
@@ -517,10 +511,18 @@ class EquivalenceService:
                     cod_eqv=value("cod_eqv"),
                     product=value("product"),
                     det_rvo=det_rvo,
-                    category=value("category"),
+                    category=CategoryManager.internal_name(value("category"))
+                    or "Sin Categoría",
                     order=order,
                 ))
             return result
+
+        recognized_headers = sum(index >= 0 for index in columns.values())
+        if recognized_headers:
+            missing = [field for field in required if columns[field] < 0]
+            raise ValueError(
+                "Faltan encabezados obligatorios: " + ", ".join(missing)
+            )
 
         result = []
         for row in rows:
@@ -529,13 +531,20 @@ class EquivalenceService:
                 continue
             if not any(values):
                 continue
+            det_rvo = self._number(values[3], default=-1)
+            if det_rvo < 0:
+                raise ValueError("DET RVO debe ser numérico y no negativo.")
             result.append(
                 ReagentProduct(
                     cod_prod=values[0],
                     cod_eqv=values[1],
                     product=values[2],
-                    det_rvo=self._number(values[3], default=0),
-                    category=values[4] if len(values) > 4 else "",
+                    det_rvo=det_rvo,
+                    category=(
+                        CategoryManager.internal_name(values[4])
+                        if len(values) > 4 and values[4]
+                        else "Sin Categoría"
+                    ),
                     order=len(result),
                 )
             )
@@ -801,16 +810,4 @@ class EquivalenceService:
             cell = sheet.cell(row, column)
             cell.fill = TITLE_FILL
             cell.font = Font(color="FFFFFF", bold=True, size=14)
-            cell.alignment = Alignment(horizontal="center")
-
-    @staticmethod
-    def _style_section(sheet, row: int, last_column: int, color: str | None = None) -> None:
-        fill = SECTION_FILL
-        if color and re.fullmatch(r"[0-9A-Fa-f]{6}", color):
-            fill = PatternFill("solid", fgColor=color.upper())
-        for column in range(1, last_column + 1):
-            cell = sheet.cell(row, column)
-            cell.fill = fill
-            cell.font = Font(bold=True)
-            cell.border = THIN_BORDER
             cell.alignment = Alignment(horizontal="center")

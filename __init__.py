@@ -1,3 +1,1 @@
-from .shipment_tab import ShipmentTab
-
-__all__ = ["ShipmentTab"]
+"""Automatic desktop application package."""

@@ -32,6 +32,13 @@ from models.shipment_config import (
     normalize_text,
 )
 from services.shipment_config_service import ShipmentConfigService
+from services.category_manager import CategoryManager
+from ui.common.table_helpers import (
+    center_table_item,
+    clear_selection_safe,
+    make_readonly_item,
+    resize_columns_by_ratio,
+)
 
 
 class ShipmentCategoryDialog(QDialog):
@@ -184,11 +191,16 @@ class ShipmentCategoryDialog(QDialog):
             for row, category in enumerate(categories):
                 if category.name == selected_category:
                     selected_row = row
-                values = (row + 1, category.name, f"#{category.normalized_color()}")
+                values = (
+                    row + 1,
+                    CategoryManager.visible_name(category.name),
+                    f"#{category.normalized_color()}",
+                )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
+                    item.setData(Qt.UserRole, category.name)
                     if column in (0, 2):
-                        item.setTextAlignment(Qt.AlignCenter)
+                        center_table_item(item)
                     if column == 2:
                         item.setBackground(QBrush(QColor(f"#{category.normalized_color()}")))
                     self.category_table.setItem(row, column, item)
@@ -211,35 +223,30 @@ class ShipmentCategoryDialog(QDialog):
             for row, assignment in enumerate(assignments):
                 if assignment.product_key == selected_product_key:
                     selected_row = row
-                order_item = QTableWidgetItem(str(assignment.product_order + 1))
+                order_item = center_table_item(QTableWidgetItem(str(assignment.product_order + 1)))
                 order_item.setData(Qt.UserRole, assignment.product_key)
-                order_item.setTextAlignment(Qt.AlignCenter)
-                code_item = QTableWidgetItem(assignment.cod_prod)
-                code_item.setTextAlignment(Qt.AlignCenter)
-                code_item.setFlags(code_item.flags() & ~Qt.ItemIsEditable)
-                equivalent_item = QTableWidgetItem(assignment.cod_eqv)
-                equivalent_item.setTextAlignment(Qt.AlignCenter)
-                equivalent_item.setFlags(equivalent_item.flags() & ~Qt.ItemIsEditable)
-                product_item = QTableWidgetItem(assignment.producto)
+                code_item = make_readonly_item(assignment.cod_prod)
+                equivalent_item = make_readonly_item(assignment.cod_eqv)
+                product_item = make_readonly_item(assignment.producto)
                 product_item.setToolTip(assignment.producto)
-                product_item.setTextAlignment(Qt.AlignCenter)
-                product_item.setFlags(product_item.flags() & ~Qt.ItemIsEditable)
                 self.product_table.setItem(row, 0, order_item)
                 self.product_table.setItem(row, 1, code_item)
                 self.product_table.setItem(row, 2, equivalent_item)
                 self.product_table.setItem(row, 3, product_item)
             if assignments:
                 self.product_table.selectRow(min(selected_row, len(assignments) - 1))
+            else:
+                clear_selection_safe(self.product_table)
             self._resize_tables()
         finally:
             self._loading = False
 
     def add_category(self) -> None:
         name, ok = QInputDialog.getText(self, "Nueva categoría", "Nombre de categoría:")
-        name = name.strip()
+        name = CategoryManager.internal_name(name.strip())
         if not ok or not name:
             return
-        if self.category_config.category_by_name(name) is not None:
+        if CategoryManager.contains_name(self.category_config.category_names(), name):
             QMessageBox.information(self, "Categorías", "La categoría ya existe.")
             return
         self.category_config.categories.append(
@@ -267,7 +274,7 @@ class ShipmentCategoryDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Eliminar categoría",
-            f'¿Deseas eliminar esta categoría? Los productos asociados se moverán a "{CATEGORY_WITHOUT_CATEGORY}".',
+            f'¿Deseas eliminar esta categoría? Los productos asociados se moverán a "{CategoryManager.visible_name(CATEGORY_WITHOUT_CATEGORY)}".',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -293,7 +300,7 @@ class ShipmentCategoryDialog(QDialog):
             return
         categories = self.category_config.sorted_categories()
         index = categories.index(selected)
-        target = self._target_index(index, len(categories), action)
+        target = CategoryManager.target_index(index, len(categories), action)
         if target == index:
             return
         item = categories.pop(index)
@@ -316,17 +323,6 @@ class ShipmentCategoryDialog(QDialog):
             self.move_category_to(action)
             return
         QMessageBox.information(self, "Categorías", "Selecciona una categoría o producto.")
-
-    def assign_product_category(self, key: str, category_name: str) -> None:
-        if self._loading:
-            return
-        assignment = self.category_config.assignments.get(key)
-        if assignment is None or assignment.category_name == category_name:
-            return
-        current_category = self._selected_category_name()
-        assignment.category_name = category_name
-        assignment.product_order = self._next_product_order(category_name)
-        self._persist_and_refresh(current_category)
 
     def move_selected_products_to_category(self) -> None:
         target_category = str(self.bulk_category_combo.currentData() or "").strip()
@@ -358,7 +354,7 @@ class ShipmentCategoryDialog(QDialog):
             return
         group = self._assignments_for_category(assignment.category_name, include_search=False)
         index = group.index(assignment)
-        target = self._target_index(index, len(group), action)
+        target = CategoryManager.target_index(index, len(group), action)
         if target == index:
             return
         item = group.pop(index)
@@ -408,16 +404,16 @@ class ShipmentCategoryDialog(QDialog):
         self.bulk_category_combo.blockSignals(True)
         self.bulk_category_combo.clear()
         for name in self.category_config.category_names():
-            self.bulk_category_combo.addItem(name, name)
+            self.bulk_category_combo.addItem(CategoryManager.visible_name(name), name)
         index = self.bulk_category_combo.findData(current)
         self.bulk_category_combo.setCurrentIndex(index if index >= 0 else 0)
         self.bulk_category_combo.blockSignals(False)
 
     def _normalize_product_order(self, category_name: str) -> None:
-        for order, assignment in enumerate(
-            self._assignments_for_category(category_name, include_search=False)
-        ):
-            assignment.product_order = order
+        CategoryManager.normalize_order(
+            self._assignments_for_category(category_name, include_search=False),
+            lambda assignment, order: setattr(assignment, "product_order", order),
+        )
 
     def _visible_categories(self) -> list[ShipmentCategoryConfig]:
         active_names = {
@@ -447,7 +443,7 @@ class ShipmentCategoryDialog(QDialog):
     def _selected_category_name(self) -> str:
         row = self.category_table.currentRow()
         item = self.category_table.item(row, 1) if row >= 0 else None
-        return item.text() if item is not None else ""
+        return str(item.data(Qt.UserRole) or "") if item is not None else ""
 
     def _selected_assignment(self, show_message: bool = True) -> ProductCategoryAssignment | None:
         row = self.product_table.currentRow()
@@ -515,18 +511,6 @@ class ShipmentCategoryDialog(QDialog):
             default=-1,
         ) + 1
 
-    @staticmethod
-    def _target_index(index: int, length: int, action: str) -> int:
-        if action == "first":
-            return 0
-        if action == "up":
-            return max(0, index - 1)
-        if action == "down":
-            return min(length - 1, index + 1)
-        if action == "last":
-            return length - 1
-        return index
-
     def _line_filter_changed(self) -> None:
         self.line_filter = str(self.line_combo.currentData() or "")
         self.refresh_tables()
@@ -546,18 +530,5 @@ class ShipmentCategoryDialog(QDialog):
     def _resize_tables(self) -> None:
         if not hasattr(self, "category_table") or not hasattr(self, "product_table"):
             return
-        self._resize_columns(self.category_table, (2, 4, 3))
-        self._resize_columns(self.product_table, (2, 3, 3, 8))
-
-    @staticmethod
-    def _resize_columns(table: QTableWidget, ratios: tuple[int, ...]) -> None:
-        available = max(1, table.viewport().width())
-        total = sum(ratios)
-        used = 0
-        for column, ratio in enumerate(ratios):
-            if column == len(ratios) - 1:
-                width = max(1, available - used)
-            else:
-                width = max(1, int(available * ratio / total))
-                used += width
-            table.setColumnWidth(column, width)
+        resize_columns_by_ratio(self.category_table, (2, 4, 3))
+        resize_columns_by_ratio(self.product_table, (2, 3, 3, 8))

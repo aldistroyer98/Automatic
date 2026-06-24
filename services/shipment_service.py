@@ -32,6 +32,7 @@ from models.shipment_config import (
     ShipmentCategoryState,
     product_key,
 )
+from services.excel_reader import is_empty_row
 
 
 MONTH_NAMES = ("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Set", "Oct", "Nov", "Dic")
@@ -253,6 +254,8 @@ class ShipmentService:
         errors: list[str] = []
         rows_read = 0
         for excel_row, row in enumerate(rows, start=2):
+            if is_empty_row(row):
+                continue
             rows_read += 1
             try:
                 client = self._text(row[columns["cliente"]])
@@ -608,10 +611,6 @@ class ShipmentService:
         return (index // 12, index % 12 + 1)
 
     @staticmethod
-    def _extend_date_period(period: tuple[date, date] | None, value: date) -> tuple[date, date]:
-        return (value, value) if period is None else (min(period[0], value), max(period[1], value))
-
-    @staticmethod
     def _month_date(record: ShipmentRecord) -> date:
         return date(record.anio, record.mes, 1)
 
@@ -805,41 +804,6 @@ class ShipmentService:
         }
 
         self._set_column_widths(worksheet, widths)
-
-    def _block_period(
-        self,
-        records: Sequence[ShipmentRecord],
-        year: int,
-        options: ShipmentOptions,
-    ) -> tuple[int, int]:
-        return self._active_month_period(records, year, options)
-
-    def _block_months_formula(
-        self,
-        year: int,
-        line: str,
-        client: str | None,
-        options: ShipmentOptions,
-    ) -> str:
-        if client:
-            key_column = "$Q:$Q"
-            start_column = "$U:$U"
-            end_column = "$V:$V"
-            key = self._key_join(client, line, year)
-        else:
-            key_column = "$R:$R"
-            start_column = "$AA:$AA"
-            end_column = "$AB:$AB"
-            key = self._key_join(line, year)
-        start = (
-            f"SUMIFS('Data_Normalizada'!{start_column},"
-            f"'Data_Normalizada'!{key_column},{self._excel_string(key)})"
-        )
-        end = (
-            f"SUMIFS('Data_Normalizada'!{end_column},"
-            f"'Data_Normalizada'!{key_column},{self._excel_string(key)})"
-        )
-        return f"=IFERROR(IF({end}=0,0,{end}-{start}+1),0)"
 
     def _style_summary_row(
         self,
