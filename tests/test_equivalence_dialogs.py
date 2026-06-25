@@ -6,7 +6,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from models.equivalence import (
     EquivalenceState,
@@ -18,6 +18,8 @@ from services.equivalence_category_service import EquivalenceCategoryService
 from services.equivalence_service import EquivalenceService
 from ui.dialogs.homologation_dialog import HomologationDialog
 from ui.dialogs.import_preview_dialog import ImportPreviewDialog
+from ui.dialogs.internal_consumption_dialog import InternalConsumptionDialog
+from ui.internal_consumption_widget import InternalConsumptionWidget
 from ui.tabs import equivalence_tab
 
 
@@ -35,6 +37,7 @@ class FakeEquivalenceTab(QWidget):
         super().__init__()
         self.service = service
         self.tests = tests
+        self._results = []
         self.state = EquivalenceState(
             products=products,
             settings={
@@ -220,7 +223,7 @@ def test_calculated_results_follow_product_order_and_enforce_unique_products(tmp
     assert [result.product_order for result in results] == [1, 9]
 
 
-def test_equivalence_tab_switches_embedded_views_without_dialog(tmp_path, monkeypatch) -> None:
+def test_equivalence_tab_uses_dialog_for_internal_consumption(tmp_path, monkeypatch) -> None:
     application()
     monkeypatch.setattr(
         equivalence_tab,
@@ -231,10 +234,112 @@ def test_equivalence_tab_switches_embedded_views_without_dialog(tmp_path, monkey
 
     tab.show_homologation()
     assert tab.view_stack.currentWidget() is tab.homologation_widget
-    tab.show_internal_consumption()
-    assert tab.view_stack.currentWidget() is tab.internal_consumption_widget
     tab.show_equivalence()
     assert tab.view_stack.currentWidget() is tab.result_page
+
+    calls = []
+
+    class FakeDialog:
+        def __init__(self, parent):
+            calls.append(("init", parent))
+
+        def exec(self):
+            calls.append(("exec", None))
+            return 0
+
+    monkeypatch.setattr(equivalence_tab, "InternalConsumptionDialog", FakeDialog)
+    tab.show_internal_consumption()
+
+    assert calls == [("init", tab), ("exec", None)]
+    assert tab.view_stack.count() == 2
+    tab.close()
+
+
+def test_internal_consumption_dialog_is_fixed_1200_by_675(tmp_path) -> None:
+    application()
+    tab = FakeEquivalenceTab(EquivalenceService(tmp_path / "state.json"), [], [])
+    tab.period_months = SimpleNamespace(value=lambda: 12)
+    tab.period_type = SimpleNamespace(currentText=lambda: "Total del periodo")
+    tab._optional_number = lambda value: float(value) if value else None
+    tab._load_state_to_products = lambda: None
+    dialog = InternalConsumptionDialog(tab)
+
+    assert (dialog.width(), dialog.height()) == (1200, 675)
+    assert dialog.minimumSize() == dialog.maximumSize()
+    assert dialog.widget.tabs.count() == 3
+    dialog.close()
+
+
+def test_internal_consumption_dialog_discards_unsaved_changes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    application()
+    tab = FakeEquivalenceTab(EquivalenceService(tmp_path / "state.json"), [], [])
+    tab.period_months = SimpleNamespace(value=lambda: 12)
+    tab.period_type = SimpleNamespace(currentText=lambda: "Total del periodo")
+    tab._optional_number = lambda value: float(value) if value else None
+    tab._load_state_to_products = lambda: None
+    tab.state.settings = {"internal_consumption": {"controls": [], "consumables": []}}
+    dialog = InternalConsumptionDialog(tab)
+    tab.state.settings["internal_consumption"]["controls"].append({"changed": True})
+    dialog.widget.set_dirty(True)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.Discard,
+    )
+
+    assert dialog._confirm_pending_changes()
+    assert tab.state.settings["internal_consumption"]["controls"] == []
+    dialog._closing = True
+    dialog.close()
+
+
+def test_internal_consumption_accepts_text_product_name(tmp_path, monkeypatch) -> None:
+    application()
+    monkeypatch.setattr(
+        equivalence_tab,
+        "get_app_paths",
+        lambda: SimpleNamespace(data_root=tmp_path),
+    )
+    tab = equivalence_tab.EquivalenceTab()
+    product = ReagentProduct(
+        "R-1",
+        "E-1",
+        "HemosIL RecombiPlasTin 2G (8mL)",
+        360,
+        "Reactivo Principal",
+        0,
+    )
+    tab.state = EquivalenceState(products=[product])
+    tab._load_state_to_products()
+    tab._results = [
+        equivalence_tab.EquivalenceResult(
+            "",
+            "Consumo interno",
+            product.cod_prod,
+            product.cod_eqv,
+            product.product,
+            product.det_rvo,
+            0,
+            360,
+            1,
+            product.category,
+            "",
+            product.order,
+            360,
+        )
+    ]
+    tab.recalculate = lambda: None
+
+    widget = InternalConsumptionWidget(tab)
+    widget.refresh()
+    widget.apply_calculation()
+
+    assert tab._format_number(product.product) == product.product
+    assert widget.summary_table.item(0, 0).text() == product.product
+    widget.close()
     tab.close()
 
 

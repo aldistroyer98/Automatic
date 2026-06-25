@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -28,23 +29,51 @@ if TYPE_CHECKING:
 
 class InternalConsumptionWidget(QWidget):
     closeRequested = Signal()
+    dirtyChanged = Signal(bool)
 
-    def __init__(self, tab: "EquivalenceTab") -> None:
-        super().__init__(tab)
+    def __init__(self, tab: "EquivalenceTab", parent: QWidget | None = None) -> None:
+        super().__init__(parent or tab)
         self.tab = tab
+        self.dirty = False
+        self._loading = False
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        panels = QGridLayout()
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Periodo:"))
+        self.period_label = QLabel(self)
+        header.addWidget(self.period_label)
+        header.addWidget(QLabel("Días calculados:"))
+        self.days_label = QLabel(self)
+        header.addWidget(self.days_label)
+        header.addStretch(1)
+        apply_button = QPushButton("Aplicar cálculo", self)
+        apply_button.clicked.connect(self.apply_calculation)
+        save_button = QPushButton("Guardar reglas", self)
+        save_button.clicked.connect(self.save_rules)
+        clear_button = QPushButton("Limpiar reglas", self)
+        clear_button.clicked.connect(self.clear_rules)
+        header.addWidget(apply_button)
+        header.addWidget(save_button)
+        header.addWidget(clear_button)
+        root.addLayout(header)
 
-        controls_box = QVBoxLayout()
-        controls_box.addWidget(QLabel("Controles → Reactivos"))
+        self.tabs = QTabWidget(self)
+        controls_page = QWidget(self.tabs)
+        controls_box = QVBoxLayout(controls_page)
+
         self.control_table = QTableWidget(0, 5, self)
         self.control_table.setHorizontalHeaderLabels(
             ("Activo", "Control", "Frecuencia/día", "DET RVO", "Cajas")
         )
         self.control_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.control_table.verticalHeader().setVisible(False)
+        self.control_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.control_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.control_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.control_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.control_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.control_table.itemSelectionChanged.connect(self._load_control_links)
         controls_box.addWidget(self.control_table, 1)
         self.control_reagents = QListWidget(self)
@@ -59,15 +88,21 @@ class InternalConsumptionWidget(QWidget):
         control_actions.addWidget(link_control)
         control_actions.addWidget(unlink_control)
         controls_box.addLayout(control_actions)
-        panels.addLayout(controls_box, 0, 0)
+        self.tabs.addTab(controls_page, "Controles → Reactivos")
 
-        consumables_box = QVBoxLayout()
-        consumables_box.addWidget(QLabel("Consumibles"))
+        consumables_page = QWidget(self.tabs)
+        consumables_box = QVBoxLayout(consumables_page)
         self.consumable_table = QTableWidget(0, 5, self)
         self.consumable_table.setHorizontalHeaderLabels(
             ("Activo", "Consumible", "DET RVO", "Base", "CANT")
         )
         self.consumable_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.consumable_table.verticalHeader().setVisible(False)
+        self.consumable_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.consumable_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.consumable_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.consumable_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.consumable_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.consumable_table.itemSelectionChanged.connect(self._load_consumable_links)
         consumables_box.addWidget(self.consumable_table, 1)
         self.consumable_basis = QComboBox(self)
@@ -91,38 +126,53 @@ class InternalConsumptionWidget(QWidget):
         consumable_actions.addWidget(link_consumable)
         consumable_actions.addWidget(clear_consumable)
         consumables_box.addLayout(consumable_actions)
-        panels.addLayout(consumables_box, 0, 1)
-        panels.setColumnStretch(0, 1)
-        panels.setColumnStretch(1, 1)
-        root.addLayout(panels, 3)
+        self.tabs.addTab(consumables_page, "Consumibles")
 
-        root.addWidget(QLabel("Resumen de impacto"))
+        summary_page = QWidget(self.tabs)
+        summary_layout = QVBoxLayout(summary_page)
         self.summary_table = QTableWidget(0, 6, self)
         self.summary_table.setHorizontalHeaderLabels(
             ("Producto", "DET OC", "DET interno", "DET ENV", "DET RVO", "CANT")
         )
         self.summary_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        root.addWidget(self.summary_table, 2)
+        self.summary_table.verticalHeader().setVisible(False)
+        self.summary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 6):
+            self.summary_table.horizontalHeader().setSectionResizeMode(
+                column,
+                QHeaderView.ResizeToContents,
+            )
+        summary_layout.addWidget(self.summary_table)
+        self.tabs.addTab(summary_page, "Resumen de impacto")
+        root.addWidget(self.tabs, 1)
 
         actions = QHBoxLayout()
-        save_button = QPushButton("Guardar reglas", self)
-        save_button.clicked.connect(self.save_rules)
-        apply_button = QPushButton("Aplicar cálculo", self)
-        apply_button.clicked.connect(self.apply_calculation)
-        clear_button = QPushButton("Limpiar reglas", self)
-        clear_button.clicked.connect(self.clear_rules)
-        back_button = QPushButton("Volver", self)
-        back_button.clicked.connect(self.closeRequested.emit)
-        actions.addWidget(save_button)
-        actions.addWidget(apply_button)
-        actions.addWidget(clear_button)
         actions.addStretch(1)
-        actions.addWidget(back_button)
+        close_button = QPushButton("Cerrar", self)
+        close_button.clicked.connect(self.closeRequested.emit)
+        actions.addWidget(close_button)
         root.addLayout(actions)
 
+        self.control_table.itemChanged.connect(self._mark_dirty)
+        self.consumable_table.itemChanged.connect(self._mark_dirty)
+        self.control_reagents.itemSelectionChanged.connect(self._mark_dirty)
+        self.consumable_reagents.itemSelectionChanged.connect(self._mark_dirty)
+        self.consumable_basis.currentIndexChanged.connect(self._mark_dirty)
+
     def refresh(self) -> None:
-        self._load_products()
-        self.apply_calculation()
+        self._loading = True
+        try:
+            self.period_label.setText(
+                f"{self.tab.period_months.value()} meses — {self.tab.period_type.currentText()}"
+            )
+            self.days_label.setText(
+                str(self.tab.service.target_days(self.tab.period_months.value()))
+            )
+            self._load_products()
+            self.apply_calculation()
+        finally:
+            self._loading = False
+        self.set_dirty(False)
 
     def _load_products(self) -> None:
         settings = self._settings()
@@ -144,12 +194,14 @@ class InternalConsumptionWidget(QWidget):
             rule = controls.get(product.key, {})
             enabled = QCheckBox(self.control_table)
             enabled.setChecked(bool(rule.get("enabled", True)))
+            enabled.toggled.connect(self._mark_dirty)
             self.control_table.setCellWidget(row, 0, enabled)
             self._set_item(self.control_table, row, 1, product.product, product.key)
             frequency = QDoubleSpinBox(self.control_table)
             frequency.setRange(0, 100)
             frequency.setDecimals(2)
             frequency.setValue(float(rule.get("frequency_per_day", 1)))
+            frequency.valueChanged.connect(self._mark_dirty)
             self.control_table.setCellWidget(row, 2, frequency)
             self._set_item(self.control_table, row, 3, self.tab._format_number(product.det_rvo))
             boxes = self.tab.service.control_boxes(days, product.det_rvo, frequency.value())
@@ -160,6 +212,7 @@ class InternalConsumptionWidget(QWidget):
             rule = consumables.get(product.key, {})
             enabled = QCheckBox(self.consumable_table)
             enabled.setChecked(bool(rule.get("enabled", True)))
+            enabled.toggled.connect(self._mark_dirty)
             self.consumable_table.setCellWidget(row, 0, enabled)
             self._set_item(self.consumable_table, row, 1, product.product, product.key)
             self._set_item(
@@ -185,6 +238,13 @@ class InternalConsumptionWidget(QWidget):
                 list_widget.addItem(item)
 
     def save_rules(self) -> None:
+        self._apply_ui_to_state()
+        self.tab._load_state_to_products()
+        self.tab.save_state(show_message=False)
+        self.apply_calculation(sync_ui=False)
+        self.set_dirty(False)
+
+    def _apply_ui_to_state(self) -> None:
         settings = self._settings()
         products = self.tab.service.product_lookup(self.tab.state.products)
         old_controls = {
@@ -233,29 +293,28 @@ class InternalConsumptionWidget(QWidget):
             "controls": controls,
             "consumables": consumables,
         }
-        self.tab._load_state_to_products()
-        self.tab.save_state(show_message=False)
-        self.apply_calculation()
 
-    def apply_calculation(self) -> None:
+    def apply_calculation(self, *, sync_ui: bool = True) -> None:
+        if sync_ui:
+            self._apply_ui_to_state()
         self.tab.recalculate()
         results = self.tab._results
         self.summary_table.setRowCount(len(results))
         for row, result in enumerate(results):
             values = (
                 result.product,
-                result.det_oc,
-                result.det_internal,
-                result.det_env,
-                result.det_rvo,
-                result.quantity,
+                self.tab._format_number(result.det_oc),
+                self.tab._format_number(result.det_internal),
+                self.tab._format_number(result.det_env),
+                self.tab._format_number(result.det_rvo),
+                self.tab._format_number(result.quantity),
             )
             for column, value in enumerate(values):
                 self._set_item(
                     self.summary_table,
                     row,
                     column,
-                    self.tab._format_number(value),
+                    value,
                 )
         by_key = {
             self.tab.service._result_product_key(result): result
@@ -277,8 +336,13 @@ class InternalConsumptionWidget(QWidget):
             "controls": [],
             "consumables": [],
         }
-        self.tab.save_state(show_message=False)
-        self.refresh()
+        self._loading = True
+        try:
+            self._load_products()
+            self.apply_calculation(sync_ui=False)
+        finally:
+            self._loading = False
+        self.set_dirty(True)
 
     def _save_control_links(self) -> None:
         row = self.control_table.currentRow()
@@ -287,7 +351,8 @@ class InternalConsumptionWidget(QWidget):
         key = self._item_data(self.control_table, row, 1)
         rule = self._ensure_rule("controls", "control_product_key", key)
         rule["linked_reagent_keys"] = self._selected_keys(self.control_reagents)
-        self.save_rules()
+        self.set_dirty(True)
+        self.apply_calculation()
 
     def _clear_control_links(self) -> None:
         self.control_reagents.clearSelection()
@@ -301,7 +366,8 @@ class InternalConsumptionWidget(QWidget):
         rule = self._ensure_rule("consumables", "consumable_product_key", key)
         rule["basis"] = self.consumable_basis.currentData()
         rule["linked_reagent_keys"] = self._selected_keys(self.consumable_reagents)
-        self.save_rules()
+        self.set_dirty(True)
+        self.apply_calculation()
 
     def _clear_consumable_links(self) -> None:
         self.consumable_reagents.clearSelection()
@@ -325,21 +391,36 @@ class InternalConsumptionWidget(QWidget):
             self.consumable_reagents,
         )
         if rule:
-            index = self.consumable_basis.findData(
-                rule.get("basis", "total_reagent_det_env")
-            )
-            self.consumable_basis.setCurrentIndex(max(0, index))
+            self._loading = True
+            try:
+                index = self.consumable_basis.findData(
+                    rule.get("basis", "total_reagent_det_env")
+                )
+                self.consumable_basis.setCurrentIndex(max(0, index))
+            finally:
+                self._loading = False
 
     def _load_links(self, table, key_column, section, key_name, list_widget):
         row = table.currentRow()
         if row < 0:
             return None
         key = self._item_data(table, row, key_column)
-        rule = self._ensure_rule(section, key_name, key)
+        rule = next(
+            (
+                item
+                for item in self._settings().get(section, [])
+                if item.get(key_name) == key
+            ),
+            {},
+        )
         selected = set(rule.get("linked_reagent_keys", []))
-        for index in range(list_widget.count()):
-            item = list_widget.item(index)
-            item.setSelected(item.data(Qt.UserRole) in selected)
+        self._loading = True
+        try:
+            for index in range(list_widget.count()):
+                item = list_widget.item(index)
+                item.setSelected(item.data(Qt.UserRole) in selected)
+        finally:
+            self._loading = False
         return rule
 
     def _ensure_rule(self, section: str, key_name: str, key: str) -> dict:
@@ -386,3 +467,14 @@ class InternalConsumptionWidget(QWidget):
     def _item_data(table, row, column) -> str:
         item = table.item(row, column)
         return str(item.data(Qt.UserRole) or "") if item is not None else ""
+
+    def _mark_dirty(self, *_args) -> None:
+        if not self._loading:
+            self.set_dirty(True)
+
+    def set_dirty(self, dirty: bool) -> None:
+        dirty = bool(dirty)
+        if self.dirty == dirty:
+            return
+        self.dirty = dirty
+        self.dirtyChanged.emit(dirty)

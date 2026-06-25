@@ -17,9 +17,9 @@ from services.equivalence_service import EquivalenceService, normalize_descripti
 from services.equivalence_category_service import EquivalenceCategoryService
 from ui.dialogs.homologation_dialog import HomologationWidget
 from ui.dialogs.import_preview_dialog import ImportPreviewDialog
+from ui.dialogs.internal_consumption_dialog import InternalConsumptionDialog
 from ui.dialogs.product_order_dialog import ProductOrderDialog
 from ui.dialogs.shipment_category_dialog import ShipmentCategoryDialog
-from ui.internal_consumption_widget import InternalConsumptionWidget
 
 
 class AlertsDialog(QDialog):
@@ -206,11 +206,8 @@ class EquivalenceTab(QWidget):
         self.result_page = result_page
         self.homologation_widget = HomologationWidget(self)
         self.homologation_widget.closeRequested.connect(self.show_equivalence)
-        self.internal_consumption_widget = InternalConsumptionWidget(self)
-        self.internal_consumption_widget.closeRequested.connect(self.show_equivalence)
         self.view_stack.addWidget(self.result_page)
         self.view_stack.addWidget(self.homologation_widget)
-        self.view_stack.addWidget(self.internal_consumption_widget)
         root.addWidget(self.view_stack, 4)
 
     def load_tender_file(self) -> None:
@@ -315,8 +312,9 @@ class EquivalenceTab(QWidget):
         self.view_stack.setCurrentWidget(self.result_page)
 
     def show_internal_consumption(self) -> None:
-        self.internal_consumption_widget.refresh()
-        self.view_stack.setCurrentWidget(self.internal_consumption_widget)
+        dialog = InternalConsumptionDialog(self)
+        dialog.exec()
+        self.recalculate()
 
     def open_order_dialog(self) -> None:
         self._sync_products_from_table()
@@ -593,7 +591,11 @@ class EquivalenceTab(QWidget):
         return EquivalenceTab._number(text) if text else None
 
     @staticmethod
-    def _format_number(value: float | None) -> str:
-        if value is None:
+    def _format_number(value: object) -> str:
+        if value is None or value == "":
             return ""
-        return str(int(value)) if float(value or 0).is_integer() else f"{value:.2f}"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return str(int(number)) if number.is_integer() else f"{number:.2f}"
