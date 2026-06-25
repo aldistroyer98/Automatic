@@ -38,15 +38,14 @@ class ImportPreviewDialog(QDialog):
         root = QVBoxLayout(self)
         root.addWidget(QLabel("Vista previa editable"))
 
-        self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(("Código SAP", "Descripción", "Cantidad", "Estado", "Observación"))
+        self.table = QTableWidget(0, 4, self)
+        self.table.setHorizontalHeaderLabels(("Código SAP", "Descripción", "Cantidad", "Estado"))
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.table.setColumnWidth(0, 130)
         self.table.setColumnWidth(2, 110)
         self.table.setColumnWidth(3, 160)
@@ -147,15 +146,12 @@ class ImportPreviewDialog(QDialog):
             row.description,
             self.tab._format_number(row.quantity),
             row.status,
-            row.observation,
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(str(value))
-            if column in (3, 4):
+            if column == 3:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            item.setTextAlignment(
-                Qt.AlignLeft | Qt.AlignVCenter if column == 1 else Qt.AlignCenter
-            )
+            item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_index, column, item)
         self._apply_row_color(row_index, row.status)
 
@@ -173,7 +169,6 @@ class ImportPreviewDialog(QDialog):
         self._loading = True
         try:
             self.table.item(row, 3).setText(data.status)
-            self.table.item(row, 4).setText(data.observation)
         finally:
             self._loading = False
         self._apply_row_color(row, data.status)

@@ -40,16 +40,45 @@ class EquivalenceCategoryService:
                 categories.append(ShipmentCategoryConfig(name, color, len(categories)))
 
         assignments = {}
+        category_names = [category.name for category in sorted(categories, key=lambda item: item.order)]
+        for category_name in category_names:
+            products = sorted(
+                (
+                    product
+                    for product in self.state.products
+                    if (product.category or CATEGORY_WITHOUT_CATEGORY) == category_name
+                ),
+                key=lambda product: (
+                    product.order,
+                    product.product.casefold(),
+                    product.cod_prod.casefold(),
+                    product.cod_eqv.casefold(),
+                ),
+            )
+            for relative_order, product in enumerate(products):
+                key = product_key(product.cod_prod, product.cod_eqv, product.product)
+                assignments[key] = ProductCategoryAssignment(
+                    product_key=key,
+                    cod_prod=product.cod_prod,
+                    cod_eqv=product.cod_eqv,
+                    producto=product.product,
+                    category_name=category_name,
+                    product_order=relative_order,
+                )
         for product in self.state.products:
             key = product_key(product.cod_prod, product.cod_eqv, product.product)
-            assignments[key] = ProductCategoryAssignment(
-                product_key=key,
-                cod_prod=product.cod_prod,
-                cod_eqv=product.cod_eqv,
-                producto=product.product,
-                category_name=product.category or CATEGORY_WITHOUT_CATEGORY,
-                product_order=product.order,
-            )
+            if key not in assignments:
+                assignments[key] = ProductCategoryAssignment(
+                    product_key=key,
+                    cod_prod=product.cod_prod,
+                    cod_eqv=product.cod_eqv,
+                    producto=product.product,
+                    category_name=CATEGORY_WITHOUT_CATEGORY,
+                    product_order=sum(
+                        assignment.category_name == CATEGORY_WITHOUT_CATEGORY
+                        for assignment in assignments.values()
+                    ),
+                )
         return ShipmentCategoryState(categories=categories, assignments=assignments)
 
     def save(self, dialog_state: ShipmentCategoryState) -> None:

@@ -12,7 +12,15 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from models.equivalence import EquivalenceResult, EquivalenceState, ImportPreviewRow, ReagentProduct, TenderTest
+from models.equivalence import (
+    ConsumableConsumptionRule,
+    ControlConsumptionRule,
+    EquivalenceResult,
+    EquivalenceState,
+    ImportPreviewRow,
+    ReagentProduct,
+    TenderTest,
+)
 from services.category_manager import CategoryManager
 from services.excel_reader import sanitize_tabular_rows
 
@@ -80,9 +88,12 @@ class EquivalenceService:
                     "product": product.product,
                     "det_rvo": product.det_rvo,
                     "category": product.category,
-                    "order": index,
+                    "order": product.order,
                 }
-                for index, product in enumerate(self.sorted_products(state.products))
+                for product in self.sorted_products(
+                    state.products,
+                    state.settings.get("product_categories", []),
+                )
             ],
             "equivalences": {
                 normalize_description(key): list(dict.fromkeys(values))
@@ -149,12 +160,16 @@ class EquivalenceService:
         period_months: int,
         period_type: str,
     ) -> tuple[list[EquivalenceResult], list[str]]:
-        products_by_key = {product.key: product for product in state.products if product.key}
+        test_list = list(tests)
+        active_relations = {
+            self.test_key(test): product
+            for test, product in self.active_relations(test_list, state)
+        }
         results: list[EquivalenceResult] = []
         warnings: list[str] = []
         seen_tests: set[tuple[str, str]] = set()
 
-        for test in tests:
+        for test in test_list:
             test_key = (test.sap_code.strip(), normalize_description(test.description))
             if test_key in seen_tests:
                 warnings.append(f"Duplicado: {test.sap_code} | {test.description}")
@@ -163,23 +178,241 @@ class EquivalenceService:
                 warnings.append(f"Cantidad inválida o descripción vacía: {test.sap_code} | {test.description}")
                 continue
             det_oc = self.det_oc(test.quantity, period_months, period_type)
-            product_keys = state.equivalences.get(normalize_description(test.description), [])
-            if not product_keys:
+            product = active_relations.get(self.test_key(test))
+            if product is None:
                 warnings.append(f"Sin equivalencia: {test.sap_code} | {test.description}")
                 continue
-            for product_key in product_keys:
-                product = products_by_key.get(product_key)
-                if product is None:
-                    warnings.append(f"Producto no encontrado para {test.description}: {product_key}")
-                    continue
-                if product.det_rvo is None or product.det_rvo <= 0:
-                    warnings.append(f"Producto sin DET RVO: {product.cod_prod} | {product.product}")
-                    results.append(self._result(test, product, det_oc, 0, 0, "Falta DET RVO"))
-                    continue
-                quantity = math.ceil(det_oc / product.det_rvo)
-                det_env = quantity * product.det_rvo
-                results.append(self._result(test, product, det_oc, det_env, quantity))
+            if product.det_rvo is None or product.det_rvo <= 0:
+                warnings.append(f"Producto sin DET RVO: {product.cod_prod} | {product.product}")
+                results.append(self._result(test, product, det_oc, 0, 0, "Falta DET RVO"))
+                continue
+            quantity = math.ceil(det_oc / product.det_rvo)
+            det_env = quantity * product.det_rvo
+            results.append(self._result(test, product, det_oc, det_env, quantity))
+        categories = state.settings.get("product_categories", [])
+        results.sort(
+            key=lambda result: (
+                self.category_order(result.category, categories),
+                result.product_order,
+                result.product.casefold(),
+                result.cod_prod.casefold(),
+                result.cod_eqv.casefold(),
+            )
+        )
         return results, warnings
+
+    def calculate_with_internal_consumption(
+        self,
+        tests: Iterable[TenderTest],
+        state: EquivalenceState,
+        period_months: int,
+        period_type: str,
+    ) -> tuple[list[EquivalenceResult], list[str]]:
+        results, warnings = self.calculate(tests, state, period_months, period_type)
+        products = self.product_lookup(state.products)
+        result_by_product = {
+            self._result_product_key(result): result
+            for result in results
+        }
+        days = self.target_days(period_months)
+
+        for rule in self.control_rules(state):
+            if not rule.enabled:
+                continue
+            control = products.get(rule.control_product_key)
+            if control is None:
+                continue
+            runs = days * max(0.0, rule.frequency_per_day)
+            for reagent_key in rule.linked_reagent_keys:
+                reagent = products.get(reagent_key)
+                if reagent is None:
+                    continue
+                result = result_by_product.get(reagent.key)
+                if result is None:
+                    result = self._internal_result(reagent)
+                    results.append(result)
+                    result_by_product[reagent.key] = result
+                result.det_internal += runs
+            control_result = result_by_product.get(control.key)
+            if control_result is None:
+                control_result = self._internal_result(control)
+                results.append(control_result)
+                result_by_product[control.key] = control_result
+            control_result.det_internal += runs
+
+        self._recalculate_internal_results(results)
+
+        reagent_results = [
+            result
+            for result in results
+            if normalize_description(result.category) == "reactivo principal"
+        ]
+        for rule in self.consumable_rules(state):
+            if not rule.enabled:
+                continue
+            consumable = products.get(rule.consumable_product_key)
+            if consumable is None:
+                continue
+            selected = set(rule.linked_reagent_keys)
+            basis_results = (
+                [
+                    result
+                    for result in reagent_results
+                    if self._result_product_key(result) in selected
+                ]
+                if rule.basis == "selected_reagents_det_env" and selected
+                else reagent_results
+            )
+            internal = sum(result.det_env for result in basis_results)
+            result = result_by_product.get(consumable.key)
+            if result is None:
+                result = self._internal_result(consumable)
+                results.append(result)
+                result_by_product[consumable.key] = result
+            result.det_internal += internal
+
+        self._recalculate_internal_results(results)
+        categories = state.settings.get("product_categories", [])
+        results.sort(
+            key=lambda result: (
+                self.category_order(result.category, categories),
+                result.product_order,
+                result.product.casefold(),
+            )
+        )
+        return results, warnings
+
+    @staticmethod
+    def target_days(period_months: int) -> int:
+        return max(1, math.ceil(365 * max(1, int(period_months)) / 12))
+
+    @staticmethod
+    def control_boxes(days: int, det_rvo: float | None, frequency_per_day: float = 1.0) -> int:
+        if det_rvo is None or det_rvo <= 0:
+            return 0
+        return math.ceil(days * max(0.0, frequency_per_day) / det_rvo)
+
+    @staticmethod
+    def control_rules(state: EquivalenceState) -> list[ControlConsumptionRule]:
+        data = state.settings.get("internal_consumption", {}).get("controls", [])
+        return [
+            ControlConsumptionRule(
+                control_product_key=str(item.get("control_product_key", "")),
+                linked_reagent_keys=list(item.get("linked_reagent_keys", [])),
+                frequency_per_day=float(item.get("frequency_per_day", 1) or 0),
+                enabled=bool(item.get("enabled", True)),
+            )
+            for item in data
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def consumable_rules(state: EquivalenceState) -> list[ConsumableConsumptionRule]:
+        data = state.settings.get("internal_consumption", {}).get("consumables", [])
+        return [
+            ConsumableConsumptionRule(
+                consumable_product_key=str(item.get("consumable_product_key", "")),
+                basis=str(item.get("basis", "total_reagent_det_env")),
+                linked_reagent_keys=list(item.get("linked_reagent_keys", [])),
+                enabled=bool(item.get("enabled", True)),
+            )
+            for item in data
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _result_product_key(result: EquivalenceResult) -> str:
+        return ReagentProduct(
+            result.cod_prod,
+            result.cod_eqv,
+            result.product,
+            result.det_rvo,
+        ).key
+
+    @staticmethod
+    def _internal_result(product: ReagentProduct) -> EquivalenceResult:
+        return EquivalenceResult(
+            "",
+            "Consumo interno",
+            product.cod_prod,
+            product.cod_eqv,
+            product.product,
+            product.det_rvo,
+            0,
+            0,
+            0,
+            product.category or "Sin Categoría",
+            "",
+            product.order,
+            0,
+        )
+
+    @staticmethod
+    def _recalculate_internal_results(results: Iterable[EquivalenceResult]) -> None:
+        for result in results:
+            required = result.det_oc + result.det_internal
+            if result.det_rvo is None or result.det_rvo <= 0:
+                result.quantity = 0
+                result.det_env = required
+                continue
+            result.quantity = math.ceil(required / result.det_rvo) if required > 0 else 0
+            result.det_env = result.quantity * result.det_rvo
+
+    @staticmethod
+    def test_key(test: TenderTest) -> str:
+        quantity = f"{test.quantity:.12g}"
+        return "|".join(
+            (
+                test.sap_code.strip(),
+                normalize_description(test.description),
+                quantity,
+            )
+        )
+
+    @classmethod
+    def equivalence_values(
+        cls,
+        state: EquivalenceState,
+        test: TenderTest,
+    ) -> list[str]:
+        return cls.equivalence_entry(state, test)[1]
+
+    @classmethod
+    def equivalence_entry(
+        cls,
+        state: EquivalenceState,
+        test: TenderTest,
+    ) -> tuple[str, list[str]]:
+        exact_key = cls.test_key(test)
+        exact = state.equivalences.get(cls.test_key(test))
+        if exact is not None:
+            return (exact_key, exact)
+        legacy_key = normalize_description(test.description)
+        return (legacy_key, state.equivalences.get(legacy_key, []))
+
+    @classmethod
+    def active_relations(
+        cls,
+        tests: Iterable[TenderTest],
+        state: EquivalenceState,
+    ) -> list[tuple[TenderTest, ReagentProduct]]:
+        products = cls.product_lookup(state.products)
+        result: list[tuple[TenderTest, ReagentProduct]] = []
+        used_tests: set[str] = set()
+        used_products: set[str] = set()
+        for test in tests:
+            test_key = cls.test_key(test)
+            if test_key in used_tests:
+                continue
+            for product_key in cls.equivalence_values(state, test):
+                product = products.get(product_key)
+                if product is None or product.key in used_products:
+                    continue
+                result.append((test, product))
+                used_tests.add(test_key)
+                used_products.add(product.key)
+                break
+        return result
 
     @staticmethod
     def det_oc(quantity: float, period_months: int, period_type: str) -> float:
@@ -190,9 +423,58 @@ class EquivalenceService:
             return quantity * math.ceil(months / 2)
         return quantity
 
+    @classmethod
+    def sorted_products(
+        cls,
+        products: Iterable[ReagentProduct],
+        categories: Iterable[dict] | None = None,
+    ) -> list[ReagentProduct]:
+        return sorted(
+            products,
+            key=lambda item: (
+                cls.category_order(item.category, categories),
+                item.order,
+                item.product.casefold(),
+                item.cod_prod.casefold(),
+                item.cod_eqv.casefold(),
+            ),
+        )
+
     @staticmethod
-    def sorted_products(products: Iterable[ReagentProduct]) -> list[ReagentProduct]:
-        return sorted(products, key=lambda item: (item.category.casefold(), item.order, item.product.casefold()))
+    def category_order(category: str, categories: Iterable[dict] | None = None) -> int:
+        configured = [
+            str(item.get("name", "")).strip()
+            for item in (categories or ())
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        ]
+        defaults = [
+            "Control de Calidad",
+            "Reactivo Principal",
+            "Consumible",
+            "Sin Categoría",
+        ]
+        names = configured or defaults
+        normalized = normalize_description(category or "Sin Categoría")
+        return next(
+            (
+                index
+                for index, name in enumerate(names)
+                if normalize_description(name) == normalized
+            ),
+            len(names),
+        )
+
+    @staticmethod
+    def product_lookup(
+        products: Iterable[ReagentProduct],
+    ) -> dict[str, ReagentProduct]:
+        result: dict[str, ReagentProduct] = {}
+        for product in products:
+            if product.key:
+                result[product.key] = product
+            if product.legacy_key:
+                result.setdefault(product.legacy_key, product)
+        return result
 
     def export_excel(
         self,
@@ -221,9 +503,9 @@ class EquivalenceService:
         sheet.title = "Equivalencia"
 
         row = 1
-        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
         sheet.cell(row, 1, "TOTAL GENERAL DE CLIENTES")
-        self._style_title(sheet, row, 9)
+        self._style_title(sheet, row, 10)
         row += 2
         sheet.cell(row, 1, "Hospital / Cliente")
         sheet.cell(row, 2, customer)
@@ -236,7 +518,10 @@ class EquivalenceService:
         sheet.cell(row, 6, period_label)
         row += 2
 
-        headers = ("Codigo SAP", "Descripcion", "CodProd", "CodEqv", "Producto", "DET RVO", "DET OC", "DET ENV", "CANT")
+        headers = (
+            "Codigo SAP", "Descripcion", "CodProd", "CodEqv", "Producto",
+            "DET RVO", "DET OC", "DET interno", "DET ENV", "CANT",
+        )
         row = self._write_grouped_results(sheet, row, headers, result_list, categories)
 
         pending = self.pending_tests(test_list, result_list)
@@ -254,7 +539,10 @@ class EquivalenceService:
             row += 1
             self._write_table(sheet, row, "Alertas", ("Detalle",), ((warning,) for warning in warning_list), warning=True)
 
-        widths = {1: 16, 2: 38, 3: 16, 4: 16, 5: 42, 6: 12, 7: 12, 8: 12, 9: 10}
+        widths = {
+            1: 16, 2: 38, 3: 16, 4: 16, 5: 42,
+            6: 12, 7: 12, 8: 12, 9: 12, 10: 10,
+        }
         for column, width in widths.items():
             sheet.column_dimensions[get_column_letter(column)].width = width
         workbook.save(output)
@@ -481,6 +769,8 @@ class EquivalenceService:
             quantity,
             product.category or "Sin Categoría",
             warning,
+            product.order,
+            0,
         )
 
     @staticmethod
@@ -556,7 +846,9 @@ class EquivalenceService:
             key=lambda item: (
                 category_order.get(item.category.strip(), len(category_order)),
                 item.category.casefold(),
+                item.product_order,
                 item.product.casefold(),
+                item.cod_prod.casefold(),
             ),
         )
         row = self._write_headers(sheet, row, headers)
@@ -585,6 +877,7 @@ class EquivalenceService:
                 result.product,
                 result.det_rvo if result.det_rvo is not None and result.det_rvo > 0 else "",
                 result.det_oc if result.det_oc > 0 else "",
+                result.det_internal if result.det_internal > 0 else "",
                 result.det_env if result.det_env > 0 else "",
                 result.quantity if result.quantity > 0 else "",
             )

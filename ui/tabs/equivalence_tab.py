@@ -8,17 +8,18 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog,
     QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
     QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QStackedWidget,
 )
 
 from app.paths import get_app_paths
 from models.equivalence import EquivalenceResult, ImportPreviewRow, ReagentProduct, TenderTest
 from services.equivalence_service import EquivalenceService, normalize_description
 from services.equivalence_category_service import EquivalenceCategoryService
-from ui.dialogs.homologation_dialog import HomologationDialog
+from ui.dialogs.homologation_dialog import HomologationWidget
 from ui.dialogs.import_preview_dialog import ImportPreviewDialog
 from ui.dialogs.product_order_dialog import ProductOrderDialog
 from ui.dialogs.shipment_category_dialog import ShipmentCategoryDialog
+from ui.internal_consumption_widget import InternalConsumptionWidget
 
 
 class AlertsDialog(QDialog):
@@ -84,15 +85,21 @@ class EquivalenceTab(QWidget):
         load_file_button.setText("Cargar CSV")
         load_file_button.clicked.connect(self.load_tender_file)
         homologation_button = QPushButton("Homologar", self)
-        homologation_button.clicked.connect(self.open_homologation_dialog)
+        homologation_button.clicked.connect(self.show_homologation)
+        equivalence_button = QPushButton("Equivalencia", self)
+        equivalence_button.clicked.connect(self.show_equivalence)
+        internal_button = QPushButton("Consumo interno", self)
+        internal_button.clicked.connect(self.show_internal_consumption)
         self.alerts_button = QPushButton("Ver alertas", self)
         self.alerts_button.clicked.connect(self.show_alerts)
         export_button = QPushButton("Exportar Excel", self)
         export_button.clicked.connect(self.export_excel)
         import_row.addWidget(load_file_button)
         import_row.addWidget(homologation_button)
-        import_row.addWidget(self.alerts_button)
+        import_row.addWidget(equivalence_button)
+        import_row.addWidget(internal_button)
         import_row.addStretch(1)
+        import_row.addWidget(self.alerts_button)
         import_row.addWidget(export_button)
         root.addLayout(import_row)
         top = QHBoxLayout()
@@ -173,14 +180,15 @@ class EquivalenceTab(QWidget):
         self.equivalence_list.setMaximumHeight(80)
         self.equivalence_list.hide()
 
-        bottom = QHBoxLayout()
+        result_page = QWidget(self)
+        bottom = QHBoxLayout(result_page)
+        bottom.setContentsMargins(0, 0, 0, 0)
         result_box = QVBoxLayout()
         result_box.addWidget(QLabel("Resultado calculado / previsualización final"))
-        self.result_table = QTableWidget(0, 9, self)
-        self.result_table.setHorizontalHeaderLabels(("CodProd", "CodEqv", "Producto", "DET RVO", "DET OC", "DET ENV", "CANT"))
+        self.result_table = QTableWidget(0, 10, self)
         self.result_table.setHorizontalHeaderLabels((
             "Codigo SAP", "Descripcion", "CodProd", "CodEqv", "Producto",
-            "DET RVO", "DET OC", "DET ENV", "CANT",
+            "DET RVO", "DET OC", "DET interno", "DET ENV", "CANT",
         ))
         self.result_table.verticalHeader().setVisible(False)
         self.result_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -194,7 +202,16 @@ class EquivalenceTab(QWidget):
         self.alerts_list = QListWidget(self)
         alerts_box.addWidget(self.alerts_list, 1)
         self._hide_layout(alerts_box)
-        root.addLayout(bottom, 4)
+        self.view_stack = QStackedWidget(self)
+        self.result_page = result_page
+        self.homologation_widget = HomologationWidget(self)
+        self.homologation_widget.closeRequested.connect(self.show_equivalence)
+        self.internal_consumption_widget = InternalConsumptionWidget(self)
+        self.internal_consumption_widget.closeRequested.connect(self.show_equivalence)
+        self.view_stack.addWidget(self.result_page)
+        self.view_stack.addWidget(self.homologation_widget)
+        self.view_stack.addWidget(self.internal_consumption_widget)
+        root.addWidget(self.view_stack, 4)
 
     def load_tender_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Cargar licitación", "", "CSV (*.csv)")
@@ -287,10 +304,19 @@ class EquivalenceTab(QWidget):
         self._products_changed()
 
     def open_homologation_dialog(self) -> None:
-        dialog = HomologationDialog(self)
-        dialog.exec()
-        self._refresh_equivalences()
+        self.show_homologation()
+
+    def show_homologation(self) -> None:
+        self.homologation_widget.refresh_all()
+        self.view_stack.setCurrentWidget(self.homologation_widget)
+
+    def show_equivalence(self) -> None:
         self.recalculate()
+        self.view_stack.setCurrentWidget(self.result_page)
+
+    def show_internal_consumption(self) -> None:
+        self.internal_consumption_widget.refresh()
+        self.view_stack.setCurrentWidget(self.internal_consumption_widget)
 
     def open_order_dialog(self) -> None:
         self._sync_products_from_table()
@@ -321,7 +347,7 @@ class EquivalenceTab(QWidget):
         if test is None or product is None:
             QMessageBox.information(self, "Equivalencia", "Selecciona una prueba y un producto.")
             return
-        key = normalize_description(test.description)
+        key = self.service.test_key(test)
         values = self.state.equivalences.setdefault(key, [])
         if product.key not in values:
             values.append(product.key)
@@ -334,7 +360,7 @@ class EquivalenceTab(QWidget):
         item = self.equivalence_list.currentItem()
         if test is None or item is None:
             return
-        key = normalize_description(test.description)
+        key, _values = self.service.equivalence_entry(self.state, test)
         product_key = str(item.data(Qt.UserRole) or "")
         self.state.equivalences[key] = [
             value for value in self.state.equivalences.get(key, [])
@@ -362,7 +388,7 @@ class EquivalenceTab(QWidget):
         if self._loading:
             return
         self._sync_products_from_table()
-        self._results, self._warnings = self.service.calculate(
+        self._results, self._warnings = self.service.calculate_with_internal_consumption(
             self._tests_from_table(),
             self.state,
             self.period_months.value(),
@@ -395,7 +421,10 @@ class EquivalenceTab(QWidget):
     def _load_state_to_products(self) -> None:
         self._loading = True
         try:
-            self.state.products = self.service.sorted_products(self.state.products)
+            self.state.products = self.service.sorted_products(
+                self.state.products,
+                self.state.settings.get("product_categories", []),
+            )
             self.product_table.setRowCount(len(self.state.products))
             for row, product in enumerate(self.state.products):
                 values = (product.cod_prod, product.cod_eqv, product.product, self._format_number(product.det_rvo), product.category)
@@ -473,8 +502,8 @@ class EquivalenceTab(QWidget):
         test = self._selected_test()
         if test is None:
             return
-        products_by_key = {product.key: product for product in self.state.products if product.key}
-        for product_key in self.state.equivalences.get(normalize_description(test.description), []):
+        products_by_key = self.service.product_lookup(self.state.products)
+        for product_key in self.service.equivalence_values(self.state, test):
             product = products_by_key.get(product_key)
             label = f"{product.cod_prod} | {product.product}" if product is not None else product_key
             self.equivalence_list.addItem(label)
@@ -499,14 +528,13 @@ class EquivalenceTab(QWidget):
                 result.product,
                 self._format_number(result.det_rvo),
                 self._format_number(result.det_oc),
+                self._format_number(result.det_internal),
                 self._format_number(result.det_env),
                 result.quantity,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                item.setTextAlignment(
-                    Qt.AlignLeft | Qt.AlignVCenter if column in (1, 4) else Qt.AlignCenter
-                )
+                item.setTextAlignment(Qt.AlignCenter)
                 self.result_table.setItem(row, column, item)
         self.result_table.resizeColumnsToContents()
         self.result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
