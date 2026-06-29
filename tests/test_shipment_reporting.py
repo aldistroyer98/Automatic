@@ -131,6 +131,79 @@ def test_january_and_february_before_march_delivery_are_computable() -> None:
     assert rows[0].prod == 3
 
 
+def test_current_month_is_not_excluded_when_today_is_june() -> None:
+    service = ShipmentService(today=date(2024, 6, 15))
+
+    assert service._last_valid_month(2024, ShipmentOptions(exclude_current_month=True)) == 6
+
+
+def test_current_year_includes_current_month_in_divisor() -> None:
+    rows = ShipmentService(today=date(2024, 6, 15)).preview(
+        analysis([record(5, 10, year=2024)])
+    )
+
+    assert rows[0].meses == 2
+    assert rows[0].total == 10
+    assert rows[0].prod == 5
+
+
+def test_previous_year_uses_december_as_final_month() -> None:
+    rows = ShipmentService(today=date(2024, 6, 15)).preview(
+        analysis([record(11, 8, year=2023)])
+    )
+
+    assert rows[0].meses == 2
+    assert rows[0].total == 8
+    assert rows[0].prod == 4
+
+
+def test_future_year_only_uses_months_required_by_dataset() -> None:
+    service = ShipmentService(today=date(2024, 6, 15))
+    options = ShipmentOptions()
+
+    assert service._last_valid_month(2025, options) == 0
+    assert service._last_valid_month(2025, options, [record(2, 7, year=2025)]) == 2
+
+
+def test_current_month_records_are_counted_in_total_months_and_average() -> None:
+    rows = ShipmentService(today=date(2024, 6, 15)).preview(
+        analysis([record(5, 10, year=2024), record(6, 5, year=2024)])
+    )
+
+    assert rows[0].total == 15
+    assert rows[0].meses == 2
+    assert rows[0].prod == 7.5
+
+
+def test_excel_total_month_and_average_include_current_month(tmp_path) -> None:
+    output = ShipmentService(today=date(2024, 6, 15)).generate_report(
+        analysis([record(5, 10, year=2024), record(6, 5, year=2024)]),
+        tmp_path / "current_month.xlsx",
+        ShipmentOptions(create_client_sheets=False),
+    )
+
+    workbook = load_workbook(output, data_only=False)
+    try:
+        sheet = workbook["Total General"]
+        assert sheet["H4"].value is not None  # Mayo
+        assert sheet["I4"].value is not None  # Junio
+        assert sheet["P4"].value == "=SUM(D4:O4)"
+        assert sheet["Q4"].value == 2
+        assert sheet["R4"].value == '=IF(Q4=0,"",P4/Q4)'
+    finally:
+        workbook.close()
+
+
+def test_three_empty_month_rule_evaluates_current_month() -> None:
+    rows = ShipmentService(today=date(2024, 6, 15)).preview(
+        analysis([record(3, 9, year=2024)])
+    )
+
+    assert rows[0].meses == 3
+    assert rows[0].total == 9
+    assert rows[0].prod == 3
+
+
 def test_all_products_share_the_same_month_computability_in_excel(tmp_path) -> None:
     records = [
         record(3, 10, code="P1"),

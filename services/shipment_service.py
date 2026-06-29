@@ -5,7 +5,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -30,12 +30,25 @@ from models.shipment_config import (
     CATEGORY_WITHOUT_CATEGORY,
     LEGACY_CATEGORY_MAP,
     ShipmentCategoryState,
+    ShipmentForecastConfig,
     product_key,
 )
 from services.excel_reader import is_empty_row
+from services.shipment_forecast_service import (
+    ShipmentForecastSegment,
+    build_forecast_segments,
+    forecast_date_range,
+)
 
 
 MONTH_NAMES = ("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Set", "Oct", "Nov", "Dic")
+FORECAST_MONTH_NAMES = (
+    "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+    "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
+)
+FORECAST_WEEKDAYS = ("L", "M", "M", "J", "V", "S", "D")
+FORECAST_START_COLUMN = 20
+FORECAST_DAY_COLUMN_WIDTH = 4.5
 NORMALIZED_HEADERS = (
     "Fecha",
     "Cliente",
@@ -265,17 +278,20 @@ class ShipmentService:
                 line = self._text(row[columns["linea"]])
                 if not client or not code or not product:
                     raise ValueError("Cliente, CodProd y Producto son obligatorios")
-                shipment_date = self._date(row[columns["fecha"]]) if "fecha" in columns else None
                 year_value = row[columns["anio"]] if "anio" in columns else None
                 month_value = row[columns["mes"]] if "mes" in columns else None
+                try:
+                    shipment_date = self._date(row[columns["fecha"]]) if "fecha" in columns else None
+                except ValueError:
+                    if year_value in (None, "") or month_value in (None, ""):
+                        raise
+                    shipment_date = None
                 year = int(float(year_value)) if year_value not in (None, "") else shipment_date.year
                 month = int(float(month_value)) if month_value not in (None, "") else shipment_date.month
                 if not 1900 <= year <= 9999:
                     raise ValueError(f"año inválido: {year}")
                 if not 1 <= month <= 12:
                     raise ValueError(f"mes inválido: {month}")
-                if shipment_date is None:
-                    shipment_date = date(year, month, 1)
                 records.append(
                     ShipmentRecord(
                         fecha=shipment_date,
@@ -383,9 +399,12 @@ class ShipmentService:
         destination: str | Path,
         options: ShipmentOptions | None = None,
         category_config: ShipmentCategoryState | None = None,
+        forecast_config: ShipmentForecastConfig | None = None,
     ) -> Path:
         options = options or ShipmentOptions()
         configured_records = self._apply_category_config(analysis.records, category_config)
+        if forecast_config is None and category_config is not None:
+            forecast_config = category_config.forecast
         records = self.filter_records(configured_records, options)
         if not records:
             raise ShipmentValidationError("Los filtros no dejan registros para generar el reporte")
@@ -403,6 +422,7 @@ class ShipmentService:
             records,
             options,
             category_config,
+            forecast_config,
             title="TOTAL GENERAL DE CLIENTES",
             client=None,
         )
@@ -419,6 +439,7 @@ class ShipmentService:
                     client_records,
                     options,
                     category_config,
+                    forecast_config,
                     title=client,
                     client=client,
                 )
@@ -460,7 +481,7 @@ class ShipmentService:
             record
             for record in records
             if record.cantidad > 0
-            and record.mes <= self._last_valid_month(record.anio, options)
+            and record.mes <= self._last_valid_month(record.anio, options, records)
         ]
         block_groups: dict[tuple[str, str, int], list[ShipmentRecord]] = defaultdict(list)
         total_groups: dict[tuple[str, int], list[ShipmentRecord]] = defaultdict(list)
@@ -560,7 +581,7 @@ class ShipmentService:
         year: int,
         options: ShipmentOptions,
     ) -> tuple[int, int]:
-        closed_month = self._last_valid_month(year, options)
+        closed_month = self._last_valid_month(year, options, records)
         positive_months = {
             record.mes
             for record in records
@@ -602,7 +623,7 @@ class ShipmentService:
         year: int,
         options: ShipmentOptions,
     ) -> set[int]:
-        closed_month = self._last_valid_month(year, options)
+        closed_month = self._last_valid_month(year, options, records)
         positive_months = {
             record.mes
             for record in records
@@ -641,19 +662,19 @@ class ShipmentService:
             {
                 (record.anio, record.mes)
                 for record in records
-                if record.cantidad > 0 and record.mes <= self._last_valid_month(record.anio, options)
+                if record.cantidad > 0
+                and record.mes <= self._last_valid_month(record.anio, options, records)
             }
         )
         if not positive_periods:
             return None
         start_year, start_month = positive_periods[0]
-        last_year = max(max(year for year, _month in positive_periods), self.today.year)
-        end_year = min(last_year, self.today.year)
+        end_year = max(max(year for year, _month in positive_periods), self.today.year)
         current_year, current_month = start_year, start_month
         empty_streak = 0
         positives = set(positive_periods)
         while (current_year, current_month) <= (end_year, 12):
-            closed_month = self._last_valid_month(current_year, options)
+            closed_month = self._last_valid_month(current_year, options, records)
             if closed_month == 0:
                 break
             if current_month > closed_month:
@@ -666,7 +687,10 @@ class ShipmentService:
                 if empty_streak == 3:
                     end_year, end_month = self._shift_month(current_year, current_month, -3)
                     return (date(start_year, start_month, 1), date(end_year, end_month, 1))
-            if current_year == self.today.year and current_month >= self._last_valid_month(current_year, options):
+            if (
+                current_year == self.today.year
+                and current_month >= self._last_valid_month(current_year, options, records)
+            ):
                 break
             current_year, current_month = self._shift_month(current_year, current_month, 1)
         return (date(start_year, start_month, 1), date(current_year, current_month, 1))
@@ -791,6 +815,7 @@ class ShipmentService:
         records: Sequence[ShipmentRecord],
         options: ShipmentOptions,
         category_config: ShipmentCategoryState | None,
+        forecast_config: ShipmentForecastConfig | None,
         title: str,
         client: str | None,
     ) -> None:
@@ -800,26 +825,45 @@ class ShipmentService:
             for year in sorted({record.anio for record in line_records}):
                 block = [record for record in line_records if record.anio == year]
                 products = self._distinct_products(block, category_config)
+                title_row = row
+                forecast_segments = (
+                    build_forecast_segments(block, forecast_config)
+                    if forecast_config is not None and forecast_config.enabled
+                    else {}
+                )
+                calendar_range = forecast_date_range(forecast_segments.values())
                 worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=18)
                 worksheet.cell(row, 1, title.upper())
                 self._style_title(worksheet, row, 18)
                 row += 1
+                subtitle_row = row
                 worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
                 worksheet.merge_cells(start_row=row, start_column=4, end_row=row, end_column=18)
                 worksheet.cell(row, 1, line.upper())
                 worksheet.cell(row, 4, year)
                 self._style_subtitle(worksheet, row)
                 row += 1
+                header_row = row
                 headers = ("CodProd", "CodEqv", "Producto", *MONTH_NAMES, "Total", "Mes", "Prod")
                 for column, header in enumerate(headers, 1):
                     worksheet.cell(row, column, header)
                 self._style_header(worksheet, row, 18)
+                if calendar_range is not None:
+                    self._write_forecast_headers(
+                        worksheet,
+                        title_row,
+                        subtitle_row,
+                        header_row,
+                        calendar_range[0],
+                        calendar_range[1],
+                    )
                 block_computable_months = self._computable_months(block, year, options)
                 for month in range(1, 13):
                     if month not in block_computable_months:
                         worksheet.cell(row, month + 3).fill = INACTIVE_FILL
                 row += 1
                 for code, equivalent, product, category in products:
+                    forecast_key = product_key(code, equivalent, product)
                     active_months = len(block_computable_months)
                     worksheet.cell(row, 1, code).number_format = "@"
                     worksheet.cell(row, 2, equivalent).number_format = "@"
@@ -859,7 +903,17 @@ class ShipmentService:
                             vertical="center",
                             wrap_text=False,
                         )
-                    worksheet.row_dimensions[row].height = 20
+                    if calendar_range is not None and forecast_config is not None:
+                        self._write_forecast_product_row(
+                            worksheet,
+                            row,
+                            calendar_range[0],
+                            calendar_range[1],
+                            forecast_segments.get(forecast_key),
+                            forecast_config,
+                            forecast_key,
+                        )
+                    worksheet.row_dimensions[row].height = 15
                     row += 1
                 row += 1
         worksheet.freeze_panes = None
@@ -887,6 +941,84 @@ class ShipmentService:
         }
 
         self._set_column_widths(worksheet, widths)
+
+    @staticmethod
+    def _write_forecast_headers(
+        worksheet,
+        month_row: int,
+        weekday_row: int,
+        day_row: int,
+        start: date,
+        end: date,
+    ) -> None:
+        month_start_column = FORECAST_START_COLUMN
+        previous_month = (start.year, start.month)
+        day_count = (end - start).days + 1
+        for offset in range(day_count):
+            day = start + timedelta(days=offset)
+            column = FORECAST_START_COLUMN + offset
+            month_key = (day.year, day.month)
+            if month_key != previous_month:
+                ShipmentService._finish_forecast_month(
+                    worksheet, month_row, month_start_column, column - 1, previous_month
+                )
+                month_start_column = column
+                previous_month = month_key
+            worksheet.cell(weekday_row, column, FORECAST_WEEKDAYS[day.weekday()])
+            worksheet.cell(day_row, column, day.day)
+            worksheet.column_dimensions[get_column_letter(column)].width = FORECAST_DAY_COLUMN_WIDTH
+            for header_row, fill in ((weekday_row, SUBTITLE_FILL), (day_row, HEADER_FILL)):
+                cell = worksheet.cell(header_row, column)
+                cell.fill = fill
+                cell.border = THIN_BORDER
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        ShipmentService._finish_forecast_month(
+            worksheet,
+            month_row,
+            month_start_column,
+            FORECAST_START_COLUMN + day_count - 1,
+            previous_month,
+        )
+
+    @staticmethod
+    def _finish_forecast_month(worksheet, row: int, start_column: int, end_column: int, month: tuple[int, int]) -> None:
+        if end_column > start_column:
+            worksheet.merge_cells(
+                start_row=row,
+                start_column=start_column,
+                end_row=row,
+                end_column=end_column,
+            )
+        cell = worksheet.cell(row, start_column)
+        cell.value = f"{FORECAST_MONTH_NAMES[month[1] - 1]} {month[0]}"
+        cell.fill = MONTH_FILL
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    @staticmethod
+    def _write_forecast_product_row(
+        worksheet,
+        row: int,
+        start: date,
+        end: date,
+        segment: ShipmentForecastSegment | None,
+        config: ShipmentForecastConfig,
+        forecast_key: str,
+    ) -> None:
+        product_config = config.product(forecast_key)
+        performance_color = product_config.performance_color or config.color("performance")
+        for offset in range((end - start).days + 1):
+            day = start + timedelta(days=offset)
+            cell = worksheet.cell(row, FORECAST_START_COLUMN + offset)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            status = segment.status_on(day) if segment is not None else None
+            if status is None:
+                continue
+            color = performance_color if status == "performance" else config.color(status)
+            cell.fill = PatternFill("solid", fgColor=color)
+            if status == "expired":
+                cell.font = Font(color="FFFFFF")
 
     def _style_summary_row(
         self,
@@ -1105,12 +1237,23 @@ class ShipmentService:
         workbook.close()
         return result
 
-    def _last_valid_month(self, year: int, options: ShipmentOptions) -> int:
+    def _last_valid_month(
+        self,
+        year: int,
+        options: ShipmentOptions,
+        records: Sequence[ShipmentRecord] | None = None,
+    ) -> int:
+        # Legacy callers still pass this option, but the current month is no longer excluded.
+        _ = options.exclude_current_month
+        dataset_month = max(
+            (record.mes for record in records or () if record.anio == year),
+            default=0,
+        )
         if year < self.today.year:
             return 12
         if year > self.today.year:
-            return 0
-        return max(0, self.today.month - 1) if options.exclude_current_month else self.today.month
+            return dataset_month
+        return max(self.today.month, dataset_month)
 
     @staticmethod
     def _excel_string(value: object) -> str:

@@ -24,6 +24,14 @@ DEFAULT_CATEGORY_COLORS = {
     CATEGORY_WITHOUT_CATEGORY: "E7E6E6",
 }
 
+DEFAULT_FORECAST_COLORS = {
+    "scheduled": "FFF2CC",
+    "logistics": "D9D2E9",
+    "actual_delivery": "F4CCCC",
+    "performance": "D9EAD3",
+    "expired": "595959",
+}
+
 LEGACY_CATEGORY_MAP = {
     CATEGORY_CONTROLS: CATEGORY_CONTROL_QUALITY,
     CATEGORY_REAGENTS: CATEGORY_MAIN_REAGENT,
@@ -66,9 +74,36 @@ class ProductCategoryAssignment:
 
 
 @dataclass
+class ShipmentForecastProductConfig:
+    product_key: str
+    enabled: bool = True
+    performance_days: float = 1.0
+    logistics_days: int | None = None
+    performance_color: str = ""
+    observation: str = ""
+
+
+@dataclass
+class ShipmentForecastConfig:
+    enabled: bool = False
+    logistics_days: int = 2
+    colors: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FORECAST_COLORS))
+    products: dict[str, ShipmentForecastProductConfig] = field(default_factory=dict)
+
+    def product(self, key: str) -> ShipmentForecastProductConfig:
+        return self.products.get(key, ShipmentForecastProductConfig(product_key=key))
+
+    def color(self, name: str) -> str:
+        fallback = DEFAULT_FORECAST_COLORS.get(name, "E7E6E6")
+        value = str(self.colors.get(name, fallback)).strip().lstrip("#").upper()
+        return value if len(value) == 6 else fallback
+
+
+@dataclass
 class ShipmentCategoryState:
     categories: list[ShipmentCategoryConfig] = field(default_factory=list)
     assignments: dict[str, ProductCategoryAssignment] = field(default_factory=dict)
+    forecast: ShipmentForecastConfig = field(default_factory=ShipmentForecastConfig)
 
     def sorted_categories(self) -> list[ShipmentCategoryConfig]:
         return sorted(self.categories, key=lambda item: (item.order, item.name.casefold()))

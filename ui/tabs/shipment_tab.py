@@ -40,7 +40,7 @@ from services.shipment_filters import (
 from services.shipment_config_service import ShipmentConfigService
 from services.shipment_service import ShipmentService
 from services.shipment_powerbi_service import ShipmentPowerBIService
-from ui.dialogs import ShipmentCategoryDialog
+from ui.dialogs import ShipmentCategoryDialog, ShipmentForecastDialog
 
 
 class FullClickComboBox(QComboBox):
@@ -288,10 +288,13 @@ class ShipmentTab(QWidget):
         self.powerbi_button.clicked.connect(self.export_powerbi)
         self.category_button = QPushButton("Categorías")
         self.category_button.clicked.connect(self.open_category_dialog)
+        self.forecast_button = QPushButton("Previsión")
+        self.forecast_button.clicked.connect(self.open_forecast_dialog)
         file_row.addWidget(load_button)
         file_row.addWidget(self.path_field, 1)
         file_row.addWidget(self.analyze_button)
         file_row.addWidget(self.category_button)
+        file_row.addWidget(self.forecast_button)
         file_row.addWidget(self.generate_button)
         file_row.addWidget(self.powerbi_button)
         layout.addLayout(file_row)
@@ -481,7 +484,7 @@ class ShipmentTab(QWidget):
             "create_summary": True,
             "hide_normalized_data": True,
             "use_category_colors": True,
-            "exclude_current_month": True,
+            "exclude_current_month": False,
             "average_from_first_shipment": True,
         }
         kwargs["clients"] = set(self.filter_state.selected_clients)
@@ -567,7 +570,13 @@ class ShipmentTab(QWidget):
         if not path:
             return
         try:
-            output = self.service.generate_report(self.analysis, path, self._options(), self.category_config)
+            output = self.service.generate_report(
+                self.analysis,
+                path,
+                self._options(),
+                self.category_config,
+                self.category_config.forecast,
+            )
             self._append(f"Archivo generado: {output}")
             QMessageBox.information(self, "Envío", f"Reporte generado correctamente:\n{output}")
         except Exception as exc:
@@ -678,6 +687,34 @@ class ShipmentTab(QWidget):
         dialog.exec()
         self.category_config = self.config_service.load()
         self.refresh_preview()
+
+    def open_forecast_dialog(self) -> None:
+        if self.analysis is None:
+            QMessageBox.information(
+                self,
+                "Previsión",
+                "Primero carga y analiza una base de envíos para configurar la previsión.",
+            )
+            return
+        changed = self.config_service.merge_products(
+            self.category_config,
+            self.analysis.records,
+            self._initial_product_sort_key,
+        )
+        if changed:
+            self.config_service.save(self.category_config)
+        active_product_keys = {
+            self.config_service.product_key_for_record(record)
+            for record in self.analysis.records
+        }
+        dialog = ShipmentForecastDialog(
+            self.category_config,
+            self.config_service,
+            active_product_keys,
+            self,
+        )
+        dialog.exec()
+        self.category_config = self.config_service.load()
 
     def _initial_product_sort_key(self, record, appearance_order: int):
         base = self.service._product_sort(record.cod_prod, record.producto, record.cod_eqv)

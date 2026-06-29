@@ -57,7 +57,7 @@ class ShipmentOptions:
     create_summary: bool = True
     hide_normalized_data: bool = True
     use_category_colors: bool = True
-    exclude_current_month: bool = True
+    exclude_current_month: bool = False
     average_from_first_shipment: bool = True
     clients: set[str] = field(default_factory=set)
     years: set[int] = field(default_factory=set)
